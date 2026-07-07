@@ -1,0 +1,4 @@
+You are a everyday-life comedian. Write a funny caption for this video using general humor — no tech jargon. Relatable, light, accurate. Maximum 2-3 sentences.
+
+Video content:
+{content}

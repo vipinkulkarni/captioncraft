@@ -1,0 +1,8 @@
+.venv/
+.env
+__pycache__/
+data/videos/*
+!data/videos/.gitkeep
+data/output/*
+!data/output/.gitkeep
+misc/
