@@ -1,8 +1,7 @@
 .venv/
 .env
 __pycache__/
-data/videos/*
-!data/videos/.gitkeep
-data/output/*
-!data/output/.gitkeep
 misc/
+
+# local-only scratch (kept out of repo)
+data/
