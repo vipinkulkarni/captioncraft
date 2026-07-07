@@ -12,6 +12,13 @@ load_dotenv()
 
 STYLES = ("formal", "sarcastic", "humorous_tech", "humorous_non_tech")
 
+_STYLE_TEMPERATURE: dict[str, float] = {
+    "formal": 0.5,
+    "sarcastic": 0.88,
+    "humorous_tech": 0.88,
+    "humorous_non_tech": 0.82,
+}
+
 
 def load_prompt(style: str) -> str:
     path = Path(__file__).resolve().parent.parent / "prompts" / f"{style}.txt"
@@ -48,7 +55,15 @@ def _is_verbatim_copy(output: str, description: str) -> bool:
         return True
     if out in desc or desc in out:
         return True
-    return _word_overlap_ratio(output, description) >= 0.8
+    return _word_overlap_ratio(output, description) >= 0.65
+
+
+def _is_bad_style_output(output: str, description: str) -> bool:
+    if not output.strip():
+        return True
+    if len(output.split()) > 45:
+        return True
+    return _is_verbatim_copy(output, description)
 
 
 def generate_factual_description(
@@ -92,6 +107,44 @@ def generate_factual_description(
     return text
 
 
+def _truncate_to_words(text: str, max_words: int = 40) -> str:
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    trimmed = " ".join(words[:max_words])
+    if trimmed[-1] not in ".!?":
+        trimmed += "."
+    return trimmed
+
+
+def _emergency_styled_caption(
+    *,
+    client: OpenAI,
+    model: str,
+    style: str,
+    description: str,
+) -> str:
+    style_hint = {
+        "formal": "polished, neutral, professional",
+        "sarcastic": "dry, ironic, subtly mocking",
+        "humorous_tech": "funny with tech/developer jokes",
+        "humorous_non_tech": "funny everyday humor, no tech jargon",
+    }.get(style, style)
+
+    prompt = (
+        f"Write a {style_hint} video caption using ONLY these facts:\n{description}\n\n"
+        "Rules: 2 short sentences max, under 50 words, completely new wording, "
+        "do not copy any sentence from the facts. English only. No emojis."
+    )
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=90,
+        temperature=0.95,
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
 def generate_styled_caption_from_text(
     *,
     client: OpenAI,
@@ -102,25 +155,25 @@ def generate_styled_caption_from_text(
 ) -> str:
     prompt_template = load_prompt(style)
     max_tokens = max(
-        get_int_env("STYLE_MAX_TOKENS", get_int_env("MAX_TOKENS", 180)),
+        get_int_env("STYLE_MAX_TOKENS", get_int_env("MAX_TOKENS", 140)),
         32,
     )
-    base_temp = get_float_env("TEMPERATURE", 0.75)
-    temperature = min(base_temp + retry * 0.12, 0.95)
+    base_temp = _STYLE_TEMPERATURE.get(style, get_float_env("TEMPERATURE", 0.75))
+    temperature = min(base_temp + retry * 0.1, 0.97)
 
     if retry >= 2:
         content_block = (
             f"Factual description of the video:\n{description}\n\n"
-            "Your last attempt copied the source. Rewrite in your style with fresh wording. "
-            "Maximum 2 short sentences, under 55 words. English only. No emojis."
+            "Your last attempt copied the source. Rewrite in your style with completely fresh wording. "
+            "Maximum 2 short sentences, under 50 words. English only. No emojis."
         )
-        max_tokens = min(max_tokens, 100)
-        temperature = 0.9
+        max_tokens = min(max_tokens, 90)
+        temperature = 0.95
     else:
         content_block = (
             f"Factual description of the video:\n{description}\n\n"
-            "Rewrite this into your style. Do not copy the description verbatim. "
-            "Pick only the most important details. 2-3 short sentences, under 70 words. "
+            "Rewrite this into your style. Do not copy the description verbatim or reuse its phrases. "
+            "Pick only the most important details. 2 short sentences, under 55 words. "
             "English only. No emojis."
         )
 
@@ -134,7 +187,7 @@ def generate_styled_caption_from_text(
     )
     out = (resp.choices[0].message.content or "").strip()
 
-    if _is_verbatim_copy(out, description) and retry < 2:
+    if _is_bad_style_output(out, description) and retry < 2:
         return generate_styled_caption_from_text(
             client=client,
             model=model,
@@ -143,12 +196,16 @@ def generate_styled_caption_from_text(
             retry=retry + 1,
         )
 
-    if _is_verbatim_copy(out, description):
-        sentences = [s.strip() for s in out.replace("!", ".").replace("?", ".").split(".") if s.strip()]
-        short = ". ".join(sentences[:2])
-        if short and not short.endswith("."):
-            short += "."
-        return short or description
+    if _is_bad_style_output(out, description):
+        emergency = _emergency_styled_caption(
+            client=client,
+            model=model,
+            style=style,
+            description=description,
+        )
+        if emergency and not _is_bad_style_output(emergency, description):
+            return emergency
+        return _truncate_to_words(emergency or out, 40)
 
     return out or description
 

@@ -1,4 +1,10 @@
-You are a witty, sarcastic narrator. Write a caption for this video that is dry, ironic, and subtly mocking — but still accurate. Maximum 2-3 sentences.
+You are a witty, sarcastic narrator. Write a caption for this video that is dry, ironic, and subtly mocking — but still accurate.
+
+Rules:
+- Do NOT repeat phrases from the source description. Use fresh wording.
+- Be ironic and lightly mocking, not a neutral summary.
+- Maximum 2-3 short sentences, under 60 words.
+- English only. No emojis.
 
 Video content:
 {content}

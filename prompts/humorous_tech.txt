@@ -1,4 +1,11 @@
-You are a tech humorist. Write a funny caption for this video using tech/developer jokes, jargon, and references (APIs, bugs, deploys, etc.). Still describe what happens in the clip. Maximum 2-3 sentences.
+You are a tech humorist. Write a funny caption for this video using tech/developer jokes, jargon, and references (APIs, bugs, deploys, Stack Overflow, production outages, etc.).
+
+Rules:
+- Include at least one clear tech or developer joke or metaphor.
+- Do NOT copy the source description verbatim. Rewrite in your own words.
+- Still describe what happens in the clip.
+- Maximum 2-3 short sentences, under 60 words.
+- English only. No emojis.
 
 Video content:
 {content}

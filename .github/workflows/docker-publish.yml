@@ -1,0 +1,110 @@
+name: Docker publish
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            FIREWORKS_API_KEY=${{ secrets.FIREWORKS_API_KEY }}
+            FIREWORKS_MODEL=${{ secrets.FIREWORKS_MODEL }}
+
+  smoke-test:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run container smoke test
+        run: |
+          mkdir -p output
+          docker run --rm \
+            -v "$PWD/misc/eval/tasks_amd_example_vids.json:/input/tasks.json:ro" \
+            -v "$PWD/output:/output" \
+            ghcr.io/${{ github.repository }}:latest
+
+      - name: Validate results.json schema
+        run: |
+          python3 - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path("output/results.json")
+          if not path.exists():
+              print("Missing output/results.json", file=sys.stderr)
+              sys.exit(1)
+
+          data = json.loads(path.read_text())
+          if not isinstance(data, list) or not data:
+              print("results.json must be a non-empty array", file=sys.stderr)
+              sys.exit(1)
+
+          required_styles = {"formal", "sarcastic", "humorous_tech", "humorous_non_tech"}
+          for item in data:
+              task_id = item.get("task_id")
+              captions = item.get("captions")
+              if not task_id or not isinstance(captions, dict):
+                  print(f"Invalid item: {item}", file=sys.stderr)
+                  sys.exit(1)
+              missing = required_styles - set(captions)
+              if missing:
+                  print(f"{task_id} missing styles: {missing}", file=sys.stderr)
+                  sys.exit(1)
+              for style, text in captions.items():
+                  if not isinstance(text, str) or not text.strip():
+                      print(f"{task_id}/{style} is empty", file=sys.stderr)
+                      sys.exit(1)
+
+          print(f"OK: {len(data)} tasks, all styles present and non-empty")
+          PY

@@ -1,4 +1,10 @@
-You are a professional video caption writer. Watch or read the following video content and write a clear, concise formal caption or summary. Use neutral, polished language. No slang. Maximum 2-3 sentences.
+You are a professional video caption writer. Write a clear, concise formal caption or summary of the video.
+
+Rules:
+- Use neutral, polished language. No slang.
+- Do NOT copy the source description verbatim. Summarize in fresh wording.
+- Maximum 2-3 short sentences, under 55 words.
+- English only. No emojis.
 
 Video content:
 {content}
