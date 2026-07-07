@@ -1,5 +1,6 @@
 import base64
 import os
+import time
 from pathlib import Path
 from typing import Iterable
 
@@ -117,6 +118,15 @@ def _truncate_to_words(text: str, max_words: int = 40) -> str:
     return trimmed
 
 
+def _ensure_non_empty(caption: str, description: str, style: str) -> str:
+    if caption.strip():
+        return caption.strip()
+    short = _truncate_to_words(description, 40)
+    if short.strip():
+        return short
+    return f"Video caption ({style})."
+
+
 def _emergency_styled_caption(
     *,
     client: OpenAI,
@@ -187,6 +197,16 @@ def generate_styled_caption_from_text(
     )
     out = (resp.choices[0].message.content or "").strip()
 
+    if not out and retry < 2:
+        time.sleep(1)
+        return generate_styled_caption_from_text(
+            client=client,
+            model=model,
+            style=style,
+            description=description,
+            retry=retry + 1,
+        )
+
     if _is_bad_style_output(out, description) and retry < 2:
         return generate_styled_caption_from_text(
             client=client,
@@ -204,10 +224,10 @@ def generate_styled_caption_from_text(
             description=description,
         )
         if emergency and not _is_bad_style_output(emergency, description):
-            return emergency
-        return _truncate_to_words(emergency or out, 40)
+            return _ensure_non_empty(emergency, description, style)
+        return _ensure_non_empty(_truncate_to_words(emergency or out, 40), description, style)
 
-    return out or description
+    return _ensure_non_empty(out or description, description, style)
 
 
 def dry_run_captions(task_id: str, styles: list[str]) -> dict[str, str]:

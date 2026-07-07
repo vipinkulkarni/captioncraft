@@ -129,12 +129,15 @@ def _caption_styles_from_description(
         if style not in STYLES:
             return style, "Unsupported style requested."
         try:
-            return style, generate_styled_caption_from_text(
+            caption = generate_styled_caption_from_text(
                 client=client,
                 model=model,
                 style=style,
                 description=description,
             )
+            if not caption.strip():
+                caption = "Failed to caption: EmptyResponse"
+            return style, caption
         except Exception as e:
             return style, f"Failed to caption: {type(e).__name__}"
 
