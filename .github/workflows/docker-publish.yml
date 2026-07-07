@@ -69,7 +69,7 @@ jobs:
         run: |
           mkdir -p output
           docker run --rm \
-            -v "$PWD/misc/eval/tasks_amd_example_vids.json:/input/tasks.json:ro" \
+            -v "$PWD/test-input/tasks.json:/input/tasks.json:ro" \
             -v "$PWD/output:/output" \
             ghcr.io/${{ github.repository }}:latest
 
