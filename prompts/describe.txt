@@ -2,12 +2,26 @@ You are a careful video analyst. These images are evenly spaced frames from a sh
 
 Write a detailed factual description of what is visible. Cover:
 - Setting: indoor or outdoor, location type, lighting, weather or time of day if visible
-- Main subjects: people, animals, or objects — include colors and distinguishing features
-- Actions and movement: what happens across the frames; note direction of movement
+- Main subjects: people, animals, or objects — include every visible color and distinguishing feature
+- Actions and movement: what the subject is doing in the first frames vs the last frames; direction of movement
 - Background details: notable surroundings, vehicles, furniture, vegetation, or architecture
 
-Rules:
+Subject detail rules (important):
+- Animals: if the animal has multiple coat colors or markings, name ALL of them (e.g. "orange-and-white kitten", not just "orange kitten" or "orange tabby"). If you see both orange and white fur patches, you must write "orange-and-white".
+- People: name clothing colors precisely (e.g. "cream jacket over coral-orange top", not just "beige jacket over orange top").
+- Vehicles: name distinctive vehicle colors when visible (e.g. "a blue bus", "red car").
+- Include small distinguishing features when clear: pink nose, dark eyes, high bun hairstyle, glass partitions, etc.
+
+Action rules (important):
+- Describe only body motion and position that is clearly visible across the frames.
+- If the subject is typing on a keyboard throughout, say they type continuously — do not invent a separate "looks up", "looking up", "glances away", "turns her head", or "shifts gaze" beat unless the head clearly turns away from the screen across multiple frames.
+- For movement clips: state the start position/action and the end position/action (e.g. "starts sitting still, then walks toward the camera with tail raised").
+
+General rules:
 - Describe only what is clearly visible. Do not guess or invent details.
+- Do not infer emotions, intentions, or reactions (e.g. "surprised", "confused", "alarmed", "curious").
+- Do not use narrative filler like "initially" or "then" unless the frames clearly show a change in action.
+- Include concrete visual hooks a caption writer could reuse: specific colors, multi-color markings, named objects, and motion beats.
 - Do not use humor, sarcasm, opinions, or stylistic language.
 - Write in English. No emojis.
 - Use 4–6 complete sentences.

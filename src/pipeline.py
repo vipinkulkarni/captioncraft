@@ -27,6 +27,14 @@ def read_tasks(path: Path) -> list[dict]:
     return data
 
 
+def load_descriptions_cache(path: Path) -> dict[str, str]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    descriptions = data.get("descriptions", {})
+    if not isinstance(descriptions, dict):
+        raise ValueError("descriptions cache must contain a descriptions object")
+    return {str(k): str(v) for k, v in descriptions.items() if v}
+
+
 def write_results(path: Path, results: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(results, indent=2), encoding="utf-8")
@@ -168,6 +176,14 @@ def run_full_tasks(
     dry_run = os.environ.get("DRY_RUN", "0") == "1"
     frame_count, frame_width = get_frame_config()
     parallel_styles = os.environ.get("PARALLEL_STYLES", "1") == "1"
+    cache_path_raw = os.environ.get("DESCRIPTIONS_CACHE", "").strip()
+    descriptions_cache: dict[str, str] = {}
+    if cache_path_raw:
+        cache_path = Path(cache_path_raw)
+        if not cache_path.is_file():
+            raise FileNotFoundError(f"DESCRIPTIONS_CACHE not found: {cache_path}")
+        descriptions_cache = load_descriptions_cache(cache_path)
+        print(f"Using frozen descriptions from {cache_path}", file=sys.stderr)
     results: list[dict] = []
 
     for task in tasks:
@@ -199,22 +215,29 @@ def run_full_tasks(
         print(f"Processing {task_id} (describe + {len(requested_styles)} styles)...", file=sys.stderr)
 
         try:
-            t_dl = time.perf_counter()
-            with tempfile.TemporaryDirectory() as td:
-                video_path = Path(td) / "clip.mp4"
-                download_video(video_url, video_path)
-                frames = extract_frames_jpeg(video_path, max_frames=frame_count, width=frame_width)
-            download_s = time.perf_counter() - t_dl
+            cached_description = descriptions_cache.get(task_id, "")
+            if cached_description:
+                print(f"  {task_id}: using cached description", file=sys.stderr)
+                description = cached_description
+                download_s = 0.0
+                describe_s = 0.0
+            else:
+                t_dl = time.perf_counter()
+                with tempfile.TemporaryDirectory() as td:
+                    video_path = Path(td) / "clip.mp4"
+                    download_video(video_url, video_path)
+                    frames = extract_frames_jpeg(video_path, max_frames=frame_count, width=frame_width)
+                download_s = time.perf_counter() - t_dl
 
-            t0 = time.perf_counter()
-            print(f"  {task_id}: describing...", file=sys.stderr)
-            description = _describe_frames(
-                client=client,
-                model=vision_model,
-                task_id=task_id,
-                frames=frames,
-            )
-            describe_s = time.perf_counter() - t0
+                t0 = time.perf_counter()
+                print(f"  {task_id}: describing...", file=sys.stderr)
+                description = _describe_frames(
+                    client=client,
+                    model=vision_model,
+                    task_id=task_id,
+                    frames=frames,
+                )
+                describe_s = time.perf_counter() - t0
 
             t1 = time.perf_counter()
             print(f"  {task_id}: captioning styles...", file=sys.stderr)
