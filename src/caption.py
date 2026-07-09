@@ -179,7 +179,7 @@ def generate_factual_description(
     frames_jpeg: Iterable[bytes],
 ) -> str:
     """Single-shot describe call. Retries are handled in pipeline._describe_frames."""
-    base_max = max(get_int_env("DESCRIBE_MAX_TOKENS", 1000), 64)
+    base_max = max(get_int_env("DESCRIBE_MAX_TOKENS", 1200), 64)
     temperature = get_float_env("DESCRIBE_TEMPERATURE", 0.2)
     text, _ = vision_describe_call(
         client=client,

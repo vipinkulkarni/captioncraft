@@ -166,7 +166,7 @@ def _describe_frames(
     task_id: str,
     frames: list[bytes],
 ) -> str:
-    base_max = max(get_int_env("DESCRIBE_MAX_TOKENS", 1000), 64)
+    base_max = max(get_int_env("DESCRIBE_MAX_TOKENS", 1200), 64)
     temperature = get_float_env("DESCRIBE_TEMPERATURE", 0.2)
     max_attempts = max(get_int_env("DESCRIBE_MAX_ATTEMPTS", 2), 1)
     retry_sleep_s = get_float_env("DESCRIBE_RETRY_SLEEP_S", 1.5)
