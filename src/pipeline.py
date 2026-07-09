@@ -229,12 +229,12 @@ def _caption_styles_from_description(
 
     if is_describe_failure(description):
         return {
-            style: public_caption(description) for style in requested_styles
+            style: public_caption(description, style=style) for style in requested_styles
         }
 
     def _one(style: str) -> tuple[str, str]:
         if style not in STYLES:
-            return style, public_caption("Unsupported style requested.")
+            return style, public_caption("Unsupported style requested.", style=style)
         try:
             caption = generate_styled_caption_from_text(
                 client=client,
@@ -244,10 +244,10 @@ def _caption_styles_from_description(
             )
             if not caption.strip():
                 caption = "Failed to caption: EmptyResponse"
-            return style, public_caption(caption)
+            return style, public_caption(caption, style=style)
         except Exception as e:
             print(f"  caption {style} failed: {type(e).__name__}", file=sys.stderr)
-            return style, public_caption(f"Failed to caption: {type(e).__name__}")
+            return style, public_caption(f"Failed to caption: {type(e).__name__}", style=style)
 
     if parallel and len(requested_styles) > 1:
         with ThreadPoolExecutor(max_workers=min(len(requested_styles), 4)) as pool:
@@ -397,7 +397,7 @@ def run_full_tasks(
                 if not requested_styles:
                     requested_styles = ["formal"]
                 for style in requested_styles:
-                    captions[style] = public_caption("Invalid task input.")
+                    captions[style] = public_caption("Invalid task input.", style=style)
                 results.append({"task_id": task_id or "unknown", "captions": captions})
                 write_results(results_path, results)
                 continue
@@ -481,7 +481,7 @@ def run_full_tasks(
                 err = f"Failed to process video: {type(e).__name__}"
                 print(f"  {task_id}: {err}", file=sys.stderr)
                 captions = {
-                    style: public_caption(err) for style in requested_styles
+                    style: public_caption(err, style=style) for style in requested_styles
                 }
 
             results.append({"task_id": task_id, "captions": captions})

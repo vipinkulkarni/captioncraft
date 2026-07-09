@@ -37,15 +37,48 @@ _DESCRIBE_FAILURE_PREFIX = "Failed to describe video:"
 _CAPTION_FAILURE_PREFIX = "Failed to caption:"
 _PROCESS_FAILURE_PREFIX = "Failed to process video:"
 
-_FRIENDLY_DESCRIBE_FAILURE = (
-    "The video shows a scene that could not be fully analyzed from the available footage."
-)
-_FRIENDLY_CAPTION_FAILURE = (
-    "A brief scene unfolds in the video, though a detailed caption could not be generated."
-)
-_FRIENDLY_PROCESS_FAILURE = (
-    "This video clip could not be processed into a detailed caption."
-)
+_FRIENDLY_DESCRIBE_FAILURE: dict[str, str] = {
+    "formal": (
+        "The available footage did not provide enough visual detail for a complete scene description."
+    ),
+    "sarcastic": (
+        "The clip kept its secrets, offering too little to work with for a proper scene read."
+    ),
+    "humorous_tech": (
+        "Sparse frames left the describe pipeline empty—nothing reliable enough to commit to production."
+    ),
+    "humorous_non_tech": (
+        "The clip was too stingy with details to pin down what was really going on."
+    ),
+}
+_FRIENDLY_CAPTION_FAILURE: dict[str, str] = {
+    "formal": (
+        "A scene unfolds in the video, though a styled caption could not be produced."
+    ),
+    "sarcastic": (
+        "Something happens in this clip, apparently—but a caption with the requested tone never showed up."
+    ),
+    "humorous_tech": (
+        "The scene description compiled, but this styled caption deploy failed—no output shipped."
+    ),
+    "humorous_non_tech": (
+        "Something's clearly happening here, but the caption never quite came together."
+    ),
+}
+_FRIENDLY_PROCESS_FAILURE: dict[str, str] = {
+    "formal": "This video clip could not be processed into captions with the requested styles.",
+    "sarcastic": "The pipeline looked at this task and quietly declined to cooperate.",
+    "humorous_tech": (
+        "Processing hit an unhandled edge case—no usable captions made it to production."
+    ),
+    "humorous_non_tech": (
+        "This clip didn't cooperate, so no proper captions made it out the other side."
+    ),
+}
+
+
+def _friendly_message(messages: dict[str, str], style: str) -> str:
+    return messages.get(style) or messages["formal"]
 
 
 def _friendly_failures_enabled() -> bool:
@@ -56,18 +89,18 @@ def is_describe_failure(text: str) -> bool:
     return text.startswith(_DESCRIBE_FAILURE_PREFIX)
 
 
-def public_caption(text: str) -> str:
+def public_caption(text: str, *, style: str = "formal") -> str:
     """Map internal failure strings to judge-facing captions when enabled."""
     if not _friendly_failures_enabled():
         return text
     if text.startswith(_DESCRIBE_FAILURE_PREFIX):
-        return _FRIENDLY_DESCRIBE_FAILURE
+        return _friendly_message(_FRIENDLY_DESCRIBE_FAILURE, style)
     if text.startswith(_CAPTION_FAILURE_PREFIX):
-        return _FRIENDLY_CAPTION_FAILURE
+        return _friendly_message(_FRIENDLY_CAPTION_FAILURE, style)
     if text.startswith(_PROCESS_FAILURE_PREFIX):
-        return _FRIENDLY_PROCESS_FAILURE
+        return _friendly_message(_FRIENDLY_PROCESS_FAILURE, style)
     if text == "Invalid task input." or text == "Unsupported style requested.":
-        return _FRIENDLY_PROCESS_FAILURE
+        return _friendly_message(_FRIENDLY_PROCESS_FAILURE, style)
     return text
 
 _META_LEAK_PREFIXES = (
