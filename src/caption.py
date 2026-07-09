@@ -231,7 +231,10 @@ def get_fireworks_client() -> OpenAI:
     if not api_key:
         raise RuntimeError("Missing FIREWORKS_API_KEY")
 
+    timeout_s = get_float_env("API_TIMEOUT_S", 45.0)
     return OpenAI(
         base_url="https://api.fireworks.ai/inference/v1",
         api_key=api_key,
+        timeout=timeout_s,
+        max_retries=0,
     )

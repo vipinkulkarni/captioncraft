@@ -1,0 +1,29 @@
+[
+  {
+    "task_id": "v1",
+    "captions": {
+      "formal": "[DRY_RUN] v1 - formal",
+      "sarcastic": "[DRY_RUN] v1 - sarcastic",
+      "humorous_tech": "[DRY_RUN] v1 - humorous_tech",
+      "humorous_non_tech": "[DRY_RUN] v1 - humorous_non_tech"
+    }
+  },
+  {
+    "task_id": "v2",
+    "captions": {
+      "formal": "[DRY_RUN] v2 - formal",
+      "sarcastic": "[DRY_RUN] v2 - sarcastic",
+      "humorous_tech": "[DRY_RUN] v2 - humorous_tech",
+      "humorous_non_tech": "[DRY_RUN] v2 - humorous_non_tech"
+    }
+  },
+  {
+    "task_id": "v3",
+    "captions": {
+      "formal": "[DRY_RUN] v3 - formal",
+      "sarcastic": "[DRY_RUN] v3 - sarcastic",
+      "humorous_tech": "[DRY_RUN] v3 - humorous_tech",
+      "humorous_non_tech": "[DRY_RUN] v3 - humorous_non_tech"
+    }
+  }
+]
