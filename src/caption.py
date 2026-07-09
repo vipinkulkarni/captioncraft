@@ -141,24 +141,18 @@ def _is_bad_output(output: str, *, style: str = "") -> tuple[bool, str]:
     return False, ""
 
 
-def generate_factual_description(
+def _vision_describe_call(
     *,
     client: OpenAI,
     model: str,
     frames_jpeg: Iterable[bytes],
-    retry: int = 0,
-) -> str:
+    max_tokens: int,
+    temperature: float,
+) -> tuple[str, str | None]:
     system_prompt = load_prompt("describe")
-    # Do not fall back to MAX_TOKENS — that env var is often 220 for style captions
-    # and starves reasoning/vision models (Gemma, GPT-OSS) into empty responses.
-    base_max = max(get_int_env("DESCRIBE_MAX_TOKENS", 1000), 64)
-    max_tokens = base_max + (300 if retry else 0)
-    temperature = get_float_env("DESCRIBE_TEMPERATURE", 0.2)
-
     content: list[dict] = [
         {"type": "image_url", "image_url": {"url": _to_data_url(b)}} for b in frames_jpeg
     ]
-
     resp = client.chat.completions.create(
         model=model,
         messages=[
@@ -170,16 +164,25 @@ def generate_factual_description(
     )
     choice = resp.choices[0]
     text = _strip_wrapping_quotes((choice.message.content or "").strip())
-    finish_reason = choice.finish_reason
+    return text, choice.finish_reason
 
-    if (not text or _looks_truncated(text, finish_reason)) and retry < 1:
-        return generate_factual_description(
-            client=client,
-            model=model,
-            frames_jpeg=frames_jpeg,
-            retry=retry + 1,
-        )
 
+def generate_factual_description(
+    *,
+    client: OpenAI,
+    model: str,
+    frames_jpeg: Iterable[bytes],
+) -> str:
+    """Single-shot describe call. Retries are handled in pipeline._describe_frames."""
+    base_max = max(get_int_env("DESCRIBE_MAX_TOKENS", 1000), 64)
+    temperature = get_float_env("DESCRIBE_TEMPERATURE", 0.2)
+    text, _ = _vision_describe_call(
+        client=client,
+        model=model,
+        frames_jpeg=frames_jpeg,
+        max_tokens=base_max,
+        temperature=temperature,
+    )
     return text
 
 
@@ -189,85 +192,65 @@ def generate_styled_caption_from_text(
     model: str,
     style: str,
     description: str,
-    retry: int = 0,
 ) -> str:
     """Generate one styled caption from a factual description.
 
-    Message structure is a strict system/user split: the system message
-    carries the persona, style rules, and an explicit "output only the
-    caption" contract; the user message carries only the raw description.
-    This keeps reasoning-style models from echoing instructions back
-    instead of answering (see misc/eval/model_eval_plan.md).
-
-    At most 2 attempts total. On persistent failure, returns a clearly
-    marked "Failed to caption: <reason>" string rather than papering over
-    it with emergency prompts or truncated fallbacks.
+    At most STYLE_MAX_ATTEMPTS API calls (default 2). On persistent failure,
+    returns a clearly marked "Failed to caption: <reason>" string.
     """
     system_prompt = load_prompt(style)
     base_max = max(get_int_env("STYLE_MAX_TOKENS", get_int_env("MAX_TOKENS", 140)), 32)
-    # Retry strategy:
-    # - retry=1: small bump (helps EmptyResponse / minor truncation)
-    # - retry=2: bigger bump specifically to avoid finish_reason=length truncation
-    if retry <= 0:
-        max_tokens = base_max
-    elif retry == 1:
-        max_tokens = base_max + 60
-    else:
-        max_tokens = base_max + 220
     base_temp = _STYLE_TEMPERATURE.get(style, get_float_env("TEMPERATURE", 0.75))
-    # If we are retrying, slightly reduce randomness to encourage clean endings.
-    temperature = min(max(base_temp - retry * 0.08, 0.2), 0.97)
-
+    max_attempts = max(get_int_env("STYLE_MAX_ATTEMPTS", 2), 1)
     user_prompt = f"Video description:\n{description}"
 
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
-    choice = resp.choices[0]
-    out = _strip_wrapping_quotes((choice.message.content or "").strip())
-    finish_reason = choice.finish_reason
+    last_out = ""
+    last_reason = "EmptyResponse"
 
-    truncated = _looks_truncated(out, finish_reason)
-    is_bad, reason = _is_bad_output(out, style=style)
+    for attempt in range(max_attempts):
+        if attempt == 0:
+            max_tokens = base_max
+        elif last_reason == "Truncated" or _looks_truncated(last_out, "length"):
+            max_tokens = base_max + 220
+        else:
+            max_tokens = base_max + 60
+        temperature = min(max(base_temp - attempt * 0.08, 0.2), 0.97)
 
-    # If truncated, try harder to finish cleanly (extra retry + more tokens).
-    if truncated and retry < 2:
-        return generate_styled_caption_from_text(
-            client=client,
+        resp = client.chat.completions.create(
             model=model,
-            style=style,
-            description=description,
-            retry=retry + 1,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
         )
+        choice = resp.choices[0]
+        out = _strip_wrapping_quotes((choice.message.content or "").strip())
+        finish_reason = choice.finish_reason
+        last_out = out
 
-    if is_bad and retry < 1:
-        if is_bad and reason == "EmptyResponse":
-            time.sleep(1)
-        return generate_styled_caption_from_text(
-            client=client,
-            model=model,
-            style=style,
-            description=description,
-            retry=retry + 1,
-        )
+        truncated = _looks_truncated(out, finish_reason)
+        is_bad, reason = _is_bad_output(out, style=style)
+        last_reason = "Truncated" if truncated else reason
 
-    if truncated:
-        # Do not discard partial output. Return what we have (and add a final
-        # period to keep the contract stable for downstream scoring/parsing).
-        out = out.strip()
-        if out and out[-1] not in ".!?":
-            out = out + "."
-        return out or f"{_CAPTION_FAILURE_PREFIX} EmptyResponse"
-    if is_bad:
-        return f"{_CAPTION_FAILURE_PREFIX} {reason}"
+        if not truncated and not is_bad:
+            return out
 
-    return out
+        if attempt < max_attempts - 1:
+            if reason == "EmptyResponse":
+                time.sleep(1)
+            continue
+
+        if truncated and out.strip():
+            out = out.strip()
+            if out[-1] not in ".!?":
+                out = out + "."
+            return out
+        if is_bad:
+            return f"{_CAPTION_FAILURE_PREFIX} {reason}"
+
+    return last_out or f"{_CAPTION_FAILURE_PREFIX} EmptyResponse"
 
 
 def dry_run_captions(task_id: str, styles: list[str]) -> dict[str, str]:

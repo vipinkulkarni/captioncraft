@@ -13,13 +13,14 @@ from openai import OpenAI
 
 from src.caption import (
     STYLES,
+    _looks_truncated,
+    _vision_describe_call,
     dry_run_captions,
-    generate_factual_description,
     generate_styled_caption_from_text,
     is_describe_failure,
     public_caption,
 )
-from src.env import get_frame_config, resolve_frame_count
+from src.env import get_float_env, get_frame_config, get_int_env, resolve_frame_count
 
 
 def probe_video_duration_s(video_path: Path) -> float:
@@ -175,26 +176,53 @@ def _describe_frames(
     task_id: str,
     frames: list[bytes],
 ) -> str:
-    description = ""
+    base_max = max(get_int_env("DESCRIBE_MAX_TOKENS", 1000), 64)
+    temperature = get_float_env("DESCRIBE_TEMPERATURE", 0.2)
+    max_attempts = max(get_int_env("DESCRIBE_MAX_ATTEMPTS", 2), 1)
+    retry_sleep_s = get_float_env("DESCRIBE_RETRY_SLEEP_S", 1.5)
+
     last_error = ""
-    max_attempts = 3
+    last_text = ""
 
     for attempt in range(1, max_attempts + 1):
+        max_tokens = base_max + (300 if attempt > 1 else 0)
+        t0 = time.perf_counter()
         try:
-            description = generate_factual_description(
+            text, finish_reason = _vision_describe_call(
                 client=client,
                 model=model,
                 frames_jpeg=frames,
+                max_tokens=max_tokens,
+                temperature=temperature,
             )
-            if description:
-                return description
-            last_error = "EmptyResponse"
-            print(f"  {task_id} describe attempt {attempt}: empty response", file=sys.stderr)
+            elapsed = time.perf_counter() - t0
+            if text and not _looks_truncated(text, finish_reason):
+                if attempt > 1:
+                    print(
+                        f"  {task_id} describe attempt {attempt} ok in {elapsed:.1f}s",
+                        file=sys.stderr,
+                    )
+                return text
+            last_text = text
+            last_error = "Truncated" if text else "EmptyResponse"
+            print(
+                f"  {task_id} describe attempt {attempt}/{max_attempts}: "
+                f"{last_error} in {elapsed:.1f}s",
+                file=sys.stderr,
+            )
         except Exception as e:
+            elapsed = time.perf_counter() - t0
             last_error = type(e).__name__
-            print(f"  {task_id} describe attempt {attempt} failed: {last_error}", file=sys.stderr)
+            print(
+                f"  {task_id} describe attempt {attempt}/{max_attempts} failed: "
+                f"{last_error} in {elapsed:.1f}s",
+                file=sys.stderr,
+            )
         if attempt < max_attempts:
-            time.sleep(2)
+            time.sleep(retry_sleep_s)
+
+    if last_text and last_error == "Truncated":
+        return last_text
 
     return f"Failed to describe video: {last_error or 'EmptyResponse'}"
 
