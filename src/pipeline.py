@@ -5,7 +5,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 
 import cv2
 import httpx
@@ -273,6 +273,91 @@ def _caption_styles_from_description(
     return captions
 
 
+def _task_needs_video_download(
+    task: dict,
+    *,
+    descriptions_cache: dict[str, str],
+    dry_run: bool,
+) -> str | None:
+    if dry_run:
+        return None
+    task_id = str(task.get("task_id", ""))
+    video_url = str(task.get("video_url", ""))
+    if not task_id or not video_url:
+        return None
+    if descriptions_cache.get(task_id, ""):
+        return None
+    return video_url
+
+
+def _next_prefetch_url(
+    tasks: list[dict],
+    after_index: int,
+    *,
+    descriptions_cache: dict[str, str],
+    dry_run: bool,
+) -> str | None:
+    for j in range(after_index + 1, len(tasks)):
+        url = _task_needs_video_download(
+            tasks[j],
+            descriptions_cache=descriptions_cache,
+            dry_run=dry_run,
+        )
+        if url:
+            return url
+    return None
+
+
+class _ClipPrefetch:
+    """Download the next clip in a background thread while the current one is processed."""
+
+    def __init__(self) -> None:
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="clip-prefetch")
+        self._future: Future[None] | None = None
+        self._td: tempfile.TemporaryDirectory[str] | None = None
+        self._path: Path | None = None
+        self._url: str | None = None
+
+    def schedule(self, video_url: str) -> None:
+        self._cancel_pending()
+        self._td = tempfile.TemporaryDirectory()
+        self._path = Path(self._td.name) / "clip.mp4"
+        self._url = video_url
+        path = self._path
+        self._future = self._executor.submit(download_video, video_url, path)
+
+    def take(self, video_url: str) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+        if self._future is not None and self._url == video_url:
+            self._future.result()
+            self._future = None
+            td, path = self._td, self._path
+            self._td = None
+            self._path = None
+            self._url = None
+            if td is None or path is None:
+                raise RuntimeError("prefetch state missing after completed download")
+            return td, path
+
+        td = tempfile.TemporaryDirectory()
+        path = Path(td.name) / "clip.mp4"
+        download_video(video_url, path)
+        return td, path
+
+    def _cancel_pending(self) -> None:
+        if self._future is not None:
+            self._future.cancel()
+            self._future = None
+        if self._td is not None:
+            self._td.cleanup()
+            self._td = None
+        self._path = None
+        self._url = None
+
+    def close(self) -> None:
+        self._cancel_pending()
+        self._executor.shutdown(wait=False)
+
+
 def run_full_tasks(
     *,
     tasks_path: Path,
@@ -305,9 +390,10 @@ def run_full_tasks(
     )
 
     results: list[dict] = []
+    prefetch = _ClipPrefetch()
 
     try:
-        for task in tasks:
+        for task_index, task in enumerate(tasks):
             task_id = str(task.get("task_id", ""))
             video_url = str(task.get("video_url", ""))
             styles = task.get("styles", [])
@@ -344,11 +430,18 @@ def run_full_tasks(
                     description = cached_description
                     download_s = 0.0
                     describe_s = 0.0
+                    next_url = _next_prefetch_url(
+                        tasks,
+                        task_index,
+                        descriptions_cache=descriptions_cache,
+                        dry_run=dry_run,
+                    )
+                    if next_url:
+                        prefetch.schedule(next_url)
                 else:
                     t_dl = time.perf_counter()
-                    with tempfile.TemporaryDirectory() as td:
-                        video_path = Path(td) / "clip.mp4"
-                        download_video(video_url, video_path)
+                    td, video_path = prefetch.take(video_url)
+                    try:
                         frame_count = resolve_frame_count(probe_video_duration_s(video_path))
                         print(
                             f"  {task_id}: extracting {frame_count} frames...",
@@ -364,7 +457,18 @@ def run_full_tasks(
                             f"(duration={duration_s:.1f}s)",
                             file=sys.stderr,
                         )
+                    finally:
+                        td.cleanup()
                     download_s = time.perf_counter() - t_dl
+
+                    next_url = _next_prefetch_url(
+                        tasks,
+                        task_index,
+                        descriptions_cache=descriptions_cache,
+                        dry_run=dry_run,
+                    )
+                    if next_url:
+                        prefetch.schedule(next_url)
 
                     t0 = time.perf_counter()
                     print(f"  {task_id}: describing...", file=sys.stderr)
@@ -401,5 +505,6 @@ def run_full_tasks(
             results.append({"task_id": task_id, "captions": captions})
             write_results(results_path, results)
     finally:
+        prefetch.close()
         if results:
             write_results(results_path, results)
