@@ -22,6 +22,53 @@ _STYLE_TEMPERATURE: dict[str, float] = {
     "humorous_non_tech": 0.82,
 }
 
+# Soft validation ceilings (prompt limit + ~12-word buffer). Catches paragraph dumps,
+# not a caption that runs a few words over the prompt target.
+_STYLE_WORD_HARD_LIMIT: dict[str, int] = {
+    "formal": 58,
+    "humorous_non_tech": 62,
+    "sarcastic": 68,
+    "humorous_tech": 68,
+}
+_DEFAULT_WORD_HARD_LIMIT = 72
+
+_DESCRIBE_FAILURE_PREFIX = "Failed to describe video:"
+_CAPTION_FAILURE_PREFIX = "Failed to caption:"
+_PROCESS_FAILURE_PREFIX = "Failed to process video:"
+
+_FRIENDLY_DESCRIBE_FAILURE = (
+    "The video shows a scene that could not be fully analyzed from the available footage."
+)
+_FRIENDLY_CAPTION_FAILURE = (
+    "A brief scene unfolds in the video, though a detailed caption could not be generated."
+)
+_FRIENDLY_PROCESS_FAILURE = (
+    "This video clip could not be processed into a detailed caption."
+)
+
+
+def _friendly_failures_enabled() -> bool:
+    return os.environ.get("FRIENDLY_FAILURES", "0") == "1"
+
+
+def is_describe_failure(text: str) -> bool:
+    return text.startswith(_DESCRIBE_FAILURE_PREFIX)
+
+
+def public_caption(text: str) -> str:
+    """Map internal failure strings to judge-facing captions when enabled."""
+    if not _friendly_failures_enabled():
+        return text
+    if text.startswith(_DESCRIBE_FAILURE_PREFIX):
+        return _FRIENDLY_DESCRIBE_FAILURE
+    if text.startswith(_CAPTION_FAILURE_PREFIX):
+        return _FRIENDLY_CAPTION_FAILURE
+    if text.startswith(_PROCESS_FAILURE_PREFIX):
+        return _FRIENDLY_PROCESS_FAILURE
+    if text == "Invalid task input." or text == "Unsupported style requested.":
+        return _FRIENDLY_PROCESS_FAILURE
+    return text
+
 _META_LEAK_PREFIXES = (
     "we need to",
     "the user wants",
@@ -77,7 +124,7 @@ def _is_meta_leak(output: str) -> bool:
     return sum(1 for m in _META_LEAK_MARKERS if m in lower) >= 2
 
 
-def _is_bad_output(output: str) -> tuple[bool, str]:
+def _is_bad_output(output: str, *, style: str = "") -> tuple[bool, str]:
     """Basic sanity check on a generated caption. Used as a validation
     signal (for retry-once and for scoring), not as the driver of a
     cascading fallback-prompt chain."""
@@ -88,7 +135,8 @@ def _is_bad_output(output: str) -> tuple[bool, str]:
     words = output.split()
     if len(words) < 5:
         return True, "TooShort"
-    if len(words) > 70:
+    hard_limit = _STYLE_WORD_HARD_LIMIT.get(style, _DEFAULT_WORD_HARD_LIMIT)
+    if len(words) > hard_limit:
         return True, "TooLong"
     return False, ""
 
@@ -186,7 +234,7 @@ def generate_styled_caption_from_text(
     finish_reason = choice.finish_reason
 
     truncated = _looks_truncated(out, finish_reason)
-    is_bad, reason = _is_bad_output(out)
+    is_bad, reason = _is_bad_output(out, style=style)
 
     # If truncated, try harder to finish cleanly (extra retry + more tokens).
     if truncated and retry < 2:
@@ -215,9 +263,9 @@ def generate_styled_caption_from_text(
         out = out.strip()
         if out and out[-1] not in ".!?":
             out = out + "."
-        return out or "Failed to caption: EmptyResponse"
+        return out or f"{_CAPTION_FAILURE_PREFIX} EmptyResponse"
     if is_bad:
-        return f"Failed to caption: {reason}"
+        return f"{_CAPTION_FAILURE_PREFIX} {reason}"
 
     return out
 

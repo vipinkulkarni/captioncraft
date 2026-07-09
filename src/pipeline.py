@@ -16,6 +16,8 @@ from src.caption import (
     dry_run_captions,
     generate_factual_description,
     generate_styled_caption_from_text,
+    is_describe_failure,
+    public_caption,
 )
 from src.env import get_frame_config, resolve_frame_count
 
@@ -52,26 +54,25 @@ def write_results(path: Path, results: list[dict]) -> None:
     path.write_text(json.dumps(results, indent=2), encoding="utf-8")
 
 
-_GOOD_DOWNLOAD_CONTENT_TYPES = frozenset(
+_BAD_DOWNLOAD_CONTENT_TYPES = frozenset(
     {
-        "video/mp4",
-        "video/quicktime",
-        "video/webm",
-        "video/x-msvideo",
-        "video/x-matroska",
-        "video/mpeg",
-        "application/octet-stream",
+        "text/html",
+        "application/json",
+        "text/plain",
+        "application/xml",
+        "text/xml",
     }
 )
 
 
-def _is_good_download_content_type(content_type: str) -> bool:
+def _is_bad_download_content_type(content_type: str) -> bool:
+    """Reject obvious non-video responses; allow missing/generic headers."""
     base = content_type.split(";", 1)[0].strip().lower()
     if not base:
         return False
-    if base in _GOOD_DOWNLOAD_CONTENT_TYPES:
+    if base in _BAD_DOWNLOAD_CONTENT_TYPES:
         return True
-    return base.startswith("video/")
+    return base.startswith("text/")
 
 
 def download_video(url: str, dest: Path) -> None:
@@ -80,8 +81,8 @@ def download_video(url: str, dest: Path) -> None:
     with httpx.stream("GET", url, follow_redirects=True, timeout=timeout) as r:
         r.raise_for_status()
         content_type = (r.headers.get("content-type") or "").lower()
-        if not _is_good_download_content_type(content_type):
-            raise RuntimeError(f"Unexpected response content-type={content_type or '(missing)'}")
+        if _is_bad_download_content_type(content_type):
+            raise RuntimeError(f"Non-video response content-type={content_type}")
         with dest.open("wb") as f:
             for chunk in r.iter_bytes():
                 f.write(chunk)
@@ -208,12 +209,14 @@ def _caption_styles_from_description(
 ) -> dict[str, str]:
     captions: dict[str, str] = {}
 
-    if description.startswith("Failed to describe video:"):
-        return {style: description for style in requested_styles}
+    if is_describe_failure(description):
+        return {
+            style: public_caption(description) for style in requested_styles
+        }
 
     def _one(style: str) -> tuple[str, str]:
         if style not in STYLES:
-            return style, "Unsupported style requested."
+            return style, public_caption("Unsupported style requested.")
         try:
             caption = generate_styled_caption_from_text(
                 client=client,
@@ -223,9 +226,10 @@ def _caption_styles_from_description(
             )
             if not caption.strip():
                 caption = "Failed to caption: EmptyResponse"
-            return style, caption
+            return style, public_caption(caption)
         except Exception as e:
-            return style, f"Failed to caption: {type(e).__name__}"
+            print(f"  caption {style} failed: {type(e).__name__}", file=sys.stderr)
+            return style, public_caption(f"Failed to caption: {type(e).__name__}")
 
     if parallel and len(requested_styles) > 1:
         with ThreadPoolExecutor(max_workers=min(len(requested_styles), 4)) as pool:
@@ -279,7 +283,7 @@ def run_full_tasks(
                 if not requested_styles:
                     requested_styles = ["formal"]
                 for style in requested_styles:
-                    captions[style] = "Invalid task input."
+                    captions[style] = public_caption("Invalid task input.")
                 results.append({"task_id": task_id or "unknown", "captions": captions})
                 write_results(results_path, results)
                 continue
@@ -352,7 +356,9 @@ def run_full_tasks(
             except Exception as e:
                 err = f"Failed to process video: {type(e).__name__}"
                 print(f"  {task_id}: {err}", file=sys.stderr)
-                captions = {style: err for style in requested_styles}
+                captions = {
+                    style: public_caption(err) for style in requested_styles
+                }
 
             results.append({"task_id": task_id, "captions": captions})
             write_results(results_path, results)

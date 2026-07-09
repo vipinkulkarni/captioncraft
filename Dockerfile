@@ -26,6 +26,8 @@ ENV FRAME_INTERVAL_S=4
 ENV FRAME_COUNT_MIN=8
 ENV FRAME_COUNT_MAX=24
 ENV FRAME_WIDTH=512
+ENV API_TIMEOUT_S=45
+ENV FRIENDLY_FAILURES=1
 
 # Container reads /input/tasks.json and writes /output/results.json
 ENTRYPOINT ["python", "-m", "src.main"]
