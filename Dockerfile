@@ -8,14 +8,24 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ src/
 COPY prompts/ prompts/
 
-# Hackathon injects nothing at runtime — bake in your API key at build time
+# Hackathon injects nothing at runtime — bake credentials and models at build time
 ARG FIREWORKS_API_KEY
-ARG FIREWORKS_MODEL
+ARG VISION_MODEL=accounts/fireworks/models/minimax-m3
+ARG CAPTION_MODEL=accounts/fireworks/models/deepseek-v4-flash
+
 ENV FIREWORKS_API_KEY=${FIREWORKS_API_KEY}
-ENV FIREWORKS_MODEL=${FIREWORKS_MODEL}
+ENV VISION_MODEL=${VISION_MODEL}
+ENV CAPTION_MODEL=${CAPTION_MODEL}
 ENV PYTHONUNBUFFERED=1
 ENV PARALLEL_STYLES=1
 ENV DOWNLOAD_READ_TIMEOUT=180
+ENV DESCRIBE_MAX_TOKENS=1000
+ENV DESCRIBE_TEMPERATURE=0.2
+ENV STYLE_MAX_TOKENS=400
+ENV FRAME_INTERVAL_S=4
+ENV FRAME_COUNT_MIN=8
+ENV FRAME_COUNT_MAX=24
+ENV FRAME_WIDTH=512
 
 # Container reads /input/tasks.json and writes /output/results.json
 ENTRYPOINT ["python", "-m", "src.main"]

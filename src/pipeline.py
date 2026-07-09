@@ -17,7 +17,19 @@ from src.caption import (
     generate_factual_description,
     generate_styled_caption_from_text,
 )
-from src.env import get_frame_config
+from src.env import get_frame_config, resolve_frame_count
+
+
+def probe_video_duration_s(video_path: Path) -> float:
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return 0.0
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+    cap.release()
+    if frame_count > 0 and fps > 0:
+        return frame_count / fps
+    return 0.0
 
 
 def read_tasks(path: Path) -> list[dict]:
@@ -174,7 +186,7 @@ def run_full_tasks(
     tasks = read_tasks(tasks_path)
 
     dry_run = os.environ.get("DRY_RUN", "0") == "1"
-    frame_count, frame_width = get_frame_config()
+    _, frame_width = get_frame_config()
     parallel_styles = os.environ.get("PARALLEL_STYLES", "1") == "1"
     cache_path_raw = os.environ.get("DESCRIPTIONS_CACHE", "").strip()
     descriptions_cache: dict[str, str] = {}
@@ -226,7 +238,16 @@ def run_full_tasks(
                 with tempfile.TemporaryDirectory() as td:
                     video_path = Path(td) / "clip.mp4"
                     download_video(video_url, video_path)
-                    frames = extract_frames_jpeg(video_path, max_frames=frame_count, width=frame_width)
+                    duration_s = probe_video_duration_s(video_path)
+                    frame_count = resolve_frame_count(duration_s)
+                    print(
+                        f"  {task_id}: extracting {frame_count} frames "
+                        f"(duration={duration_s:.1f}s)",
+                        file=sys.stderr,
+                    )
+                    frames = extract_frames_jpeg(
+                        video_path, max_frames=frame_count, width=frame_width
+                    )
                 download_s = time.perf_counter() - t_dl
 
                 t0 = time.perf_counter()
