@@ -47,6 +47,9 @@ $env:PARALLEL_STYLES="1"
 .\.venv\Scripts\python.exe -m streamlit run streamlit_app.py
 ```
 
+The demo supports either:
+- **URL input** (paste a video URL)
+
 ### Deploy on Streamlit Community Cloud
 
 1. Push the repo to GitHub

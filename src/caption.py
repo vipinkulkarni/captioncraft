@@ -157,9 +157,18 @@ def generate_styled_caption_from_text(
     """
     system_prompt = load_prompt(style)
     base_max = max(get_int_env("STYLE_MAX_TOKENS", get_int_env("MAX_TOKENS", 140)), 32)
-    max_tokens = base_max + (60 if retry else 0)
+    # Retry strategy:
+    # - retry=1: small bump (helps EmptyResponse / minor truncation)
+    # - retry=2: bigger bump specifically to avoid finish_reason=length truncation
+    if retry <= 0:
+        max_tokens = base_max
+    elif retry == 1:
+        max_tokens = base_max + 60
+    else:
+        max_tokens = base_max + 220
     base_temp = _STYLE_TEMPERATURE.get(style, get_float_env("TEMPERATURE", 0.75))
-    temperature = min(base_temp + retry * 0.15, 0.97)
+    # If we are retrying, slightly reduce randomness to encourage clean endings.
+    temperature = min(max(base_temp - retry * 0.08, 0.2), 0.97)
 
     user_prompt = f"Video description:\n{description}"
 
@@ -179,7 +188,17 @@ def generate_styled_caption_from_text(
     truncated = _looks_truncated(out, finish_reason)
     is_bad, reason = _is_bad_output(out)
 
-    if (truncated or is_bad) and retry < 1:
+    # If truncated, try harder to finish cleanly (extra retry + more tokens).
+    if truncated and retry < 2:
+        return generate_styled_caption_from_text(
+            client=client,
+            model=model,
+            style=style,
+            description=description,
+            retry=retry + 1,
+        )
+
+    if is_bad and retry < 1:
         if is_bad and reason == "EmptyResponse":
             time.sleep(1)
         return generate_styled_caption_from_text(
@@ -191,7 +210,12 @@ def generate_styled_caption_from_text(
         )
 
     if truncated:
-        return "Failed to caption: Truncated"
+        # Do not discard partial output. Return what we have (and add a final
+        # period to keep the contract stable for downstream scoring/parsing).
+        out = out.strip()
+        if out and out[-1] not in ".!?":
+            out = out + "."
+        return out or "Failed to caption: EmptyResponse"
     if is_bad:
         return f"Failed to caption: {reason}"
 

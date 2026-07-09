@@ -20,36 +20,70 @@ def _default_vision_model() -> str:
 def _default_caption_model() -> str:
     return _env("CAPTION_MODEL") or _env("FIREWORKS_MODEL") or _default_vision_model()
 
+def _pretty_model(model: str) -> str:
+    m = (model or "").strip()
+    if not m:
+        return ""
+    lower = m.lower()
+    if "minimax-m3" in lower:
+        return "MiniMax M3 (vision)"
+    if "deepseek-v4-flash" in lower:
+        return "DeepSeek V4 Flash (text)"
+    # Fall back to last path segment for readability.
+    return m.rsplit("/", 1)[-1]
+
 
 st.set_page_config(page_title="CaptionCraft Demo", page_icon="🎬", layout="centered")
+
+st.markdown(
+    """
+<style>
+  .cc-card {
+    padding: 1rem 1rem;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.04);
+    margin-bottom: 0.75rem;
+  }
+  .cc-label {
+    font-size: 0.85rem;
+    opacity: 0.8;
+    margin-bottom: 0.35rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+</style>
+""",
+    unsafe_allow_html=True,
+)
 
 st.title("CaptionCraft demo")
 st.caption("Generate 4 styled captions from a video URL using the same pipeline as the Docker agent.")
 
 with st.sidebar:
     st.subheader("Config")
-    st.text_input("Vision model", value=_default_vision_model(), disabled=True)
-    st.text_input("Caption model", value=_default_caption_model(), disabled=True)
-    st.text_input("Parallel styles", value=_env("PARALLEL_STYLES", "1"), disabled=True)
+    st.text_input("Vision model", value=_pretty_model(_default_vision_model()), disabled=True)
+    st.text_input("Caption model", value=_pretty_model(_default_caption_model()), disabled=True)
 
-    has_key = bool(_env("FIREWORKS_API_KEY"))
-    st.write(f"Fireworks API key: {'set' if has_key else 'missing'}")
-    if not has_key:
+    key_len = len(_env("FIREWORKS_API_KEY"))
+    st.write(f"Fireworks API key: {'set' if key_len else 'missing'}")
+    if 0 < key_len < 16:
+        st.warning("Your API key looks like a placeholder (very short).")
+    if not key_len:
         st.error(
             "Missing `FIREWORKS_API_KEY`. On Streamlit Cloud, set it in App → Settings → Secrets."
         )
 
 st.subheader("Input")
-video_url = st.text_input(
-    "Video URL",
-    placeholder="https://.../video.mp4",
-)
-task_id = st.text_input("Task ID (optional)", value="demo_001")
-styles = st.multiselect("Styles", options=list(STYLES), default=list(STYLES))
 
-run_btn = st.button("Generate captions", type="primary", disabled=not (video_url and styles))
+with st.form("cc_form", clear_on_submit=False):
+    video_url = st.text_input("Video URL", placeholder="https://.../video.mp4")
 
-if run_btn:
+    task_id = st.text_input("Task ID (optional)", value="demo_001")
+    styles = st.multiselect("Styles", options=list(STYLES), default=list(STYLES))
+    submitted = st.form_submit_button("Generate captions", type="primary")
+
+if submitted:
     if not _default_vision_model():
         st.error("Missing `VISION_MODEL` (or `FIREWORKS_MODEL`).")
         st.stop()
@@ -60,6 +94,10 @@ if run_btn:
         st.error("Missing `FIREWORKS_API_KEY`.")
         st.stop()
 
+    if not styles:
+        st.error("Pick at least one style.")
+        st.stop()
+
     with st.spinner("Running describe + style captions..."):
         client = get_fireworks_client()
         with tempfile.TemporaryDirectory() as td:
@@ -67,10 +105,15 @@ if run_btn:
             tasks_path = td_path / "tasks.json"
             results_path = td_path / "results.json"
 
+            resolved_video = (video_url or "").strip()
+            if not resolved_video:
+                st.error("Provide a video URL.")
+                st.stop()
+
             tasks_payload = [
                 {
                     "task_id": (task_id or "demo_001").strip(),
-                    "video_url": video_url.strip(),
+                    "video_url": resolved_video,
                     "styles": styles,
                 }
             ]
@@ -94,8 +137,15 @@ if run_btn:
 
     st.subheader("Output")
     for style in styles:
-        st.markdown(f"**{style}**")
-        st.write(captions.get(style, ""))
+        st.markdown(
+            f"""
+<div class="cc-card">
+  <div class="cc-label">{style}</div>
+  <div>{(captions.get(style, "") or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")}</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
 
     st.download_button(
         "Download results.json",
