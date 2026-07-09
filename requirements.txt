@@ -2,3 +2,4 @@ httpx
 openai
 opencv-python-headless
 python-dotenv
+streamlit

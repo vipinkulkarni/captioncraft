@@ -9,7 +9,9 @@ from openai import OpenAI
 
 from src.env import get_float_env, get_int_env
 
-load_dotenv()
+# Load repo-root .env reliably (Streamlit/other runners may change CWD).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(dotenv_path=_REPO_ROOT / ".env")
 
 STYLES = ("formal", "sarcastic", "humorous_tech", "humorous_non_tech")
 
