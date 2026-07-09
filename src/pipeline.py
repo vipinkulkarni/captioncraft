@@ -23,18 +23,6 @@ from src.caption import (
 from src.env import get_float_env, get_frame_config, get_int_env, resolve_frame_count
 
 
-def probe_video_duration_s(video_path: Path) -> float:
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        return 0.0
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
-    cap.release()
-    if frame_count > 0 and fps > 0:
-        return frame_count / fps
-    return 0.0
-
-
 def read_tasks(path: Path) -> list[dict]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, list):
@@ -125,7 +113,7 @@ def _encode_frame_jpeg(frame, width: int) -> bytes:
 def extract_frames_jpeg(
     video_path: Path,
     *,
-    max_frames: int = 8,
+    max_frames: int | None = None,
     width: int = 512,
 ) -> tuple[list[bytes], float]:
     cap = cv2.VideoCapture(str(video_path))
@@ -135,6 +123,8 @@ def extract_frames_jpeg(
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
     duration_s = frame_count / fps if frame_count > 0 and fps > 0 else 0.0
+    if max_frames is None:
+        max_frames = resolve_frame_count(duration_s)
 
     frames: list[bytes] = []
     indices = _frame_indices(frame_count, max_frames)
@@ -442,16 +432,8 @@ def run_full_tasks(
                     t_dl = time.perf_counter()
                     td, video_path = prefetch.take(video_url)
                     try:
-                        frame_count = resolve_frame_count(probe_video_duration_s(video_path))
-                        print(
-                            f"  {task_id}: extracting {frame_count} frames...",
-                            file=sys.stderr,
-                        )
-                        frames, duration_s = extract_frames_jpeg(
-                            video_path, max_frames=frame_count, width=frame_width
-                        )
-                        if duration_s <= 0:
-                            duration_s = probe_video_duration_s(video_path)
+                        print(f"  {task_id}: extracting frames...", file=sys.stderr)
+                        frames, duration_s = extract_frames_jpeg(video_path, width=frame_width)
                         print(
                             f"  {task_id}: extracted {len(frames)} frames "
                             f"(duration={duration_s:.1f}s)",
