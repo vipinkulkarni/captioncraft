@@ -13,12 +13,12 @@ from openai import OpenAI
 
 from src.caption import (
     STYLES,
-    _looks_truncated,
-    _vision_describe_call,
     dry_run_captions,
     generate_styled_caption_from_text,
     is_describe_failure,
+    looks_truncated,
     public_caption,
+    vision_describe_call,
 )
 from src.env import get_float_env, get_frame_config, get_int_env, resolve_frame_count
 
@@ -188,7 +188,7 @@ def _describe_frames(
         max_tokens = base_max + (300 if attempt > 1 else 0)
         t0 = time.perf_counter()
         try:
-            text, finish_reason = _vision_describe_call(
+            text, finish_reason = vision_describe_call(
                 client=client,
                 model=model,
                 frames_jpeg=frames,
@@ -196,7 +196,7 @@ def _describe_frames(
                 temperature=temperature,
             )
             elapsed = time.perf_counter() - t0
-            if text and not _looks_truncated(text, finish_reason):
+            if text and not looks_truncated(text, finish_reason):
                 if attempt > 1:
                     print(
                         f"  {task_id} describe attempt {attempt} ok in {elapsed:.1f}s",
@@ -294,6 +294,16 @@ def run_full_tasks(
             raise FileNotFoundError(f"DESCRIPTIONS_CACHE not found: {cache_path}")
         descriptions_cache = load_descriptions_cache(cache_path)
         print(f"Using frozen descriptions from {cache_path}", file=sys.stderr)
+    print(
+        f"config: vision={vision_model} caption={caption_model} "
+        f"parallel_styles={parallel_styles} frame_width={frame_width}px "
+        f"frame_interval_s={os.environ.get('FRAME_INTERVAL_S', '4')} "
+        f"frame_count_min={os.environ.get('FRAME_COUNT_MIN', '8')} "
+        f"frame_count_max={os.environ.get('FRAME_COUNT_MAX', '24')} "
+        f"api_timeout_s={os.environ.get('API_TIMEOUT_S', '45')}",
+        file=sys.stderr,
+    )
+
     results: list[dict] = []
 
     try:

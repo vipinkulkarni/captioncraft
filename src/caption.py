@@ -1,5 +1,6 @@
 import os
 import base64
+import functools
 import time
 from pathlib import Path
 from typing import Iterable
@@ -92,6 +93,7 @@ _META_LEAK_MARKERS = (
 )
 
 
+@functools.lru_cache(maxsize=16)
 def load_prompt(style: str) -> str:
     path = Path(__file__).resolve().parent.parent / "prompts" / f"{style}.txt"
     return path.read_text(encoding="utf-8")
@@ -109,12 +111,15 @@ def _strip_wrapping_quotes(text: str) -> str:
     return text
 
 
-def _looks_truncated(text: str, finish_reason: str | None) -> bool:
+_VALID_END_CHARS = ".!?)\""
+
+
+def looks_truncated(text: str, finish_reason: str | None) -> bool:
     if finish_reason == "length":
         return True
     if not text:
         return False
-    return text[-1] not in ".!?"
+    return text[-1] not in _VALID_END_CHARS
 
 
 def _is_meta_leak(output: str) -> bool:
@@ -141,7 +146,7 @@ def _is_bad_output(output: str, *, style: str = "") -> tuple[bool, str]:
     return False, ""
 
 
-def _vision_describe_call(
+def vision_describe_call(
     *,
     client: OpenAI,
     model: str,
@@ -176,7 +181,7 @@ def generate_factual_description(
     """Single-shot describe call. Retries are handled in pipeline._describe_frames."""
     base_max = max(get_int_env("DESCRIBE_MAX_TOKENS", 1000), 64)
     temperature = get_float_env("DESCRIBE_TEMPERATURE", 0.2)
-    text, _ = _vision_describe_call(
+    text, _ = vision_describe_call(
         client=client,
         model=model,
         frames_jpeg=frames_jpeg,
@@ -210,7 +215,7 @@ def generate_styled_caption_from_text(
     for attempt in range(max_attempts):
         if attempt == 0:
             max_tokens = base_max
-        elif last_reason == "Truncated" or _looks_truncated(last_out, "length"):
+        elif last_reason == "Truncated" or looks_truncated(last_out, "length"):
             max_tokens = base_max + 220
         else:
             max_tokens = base_max + 60
@@ -230,7 +235,7 @@ def generate_styled_caption_from_text(
         finish_reason = choice.finish_reason
         last_out = out
 
-        truncated = _looks_truncated(out, finish_reason)
+        truncated = looks_truncated(out, finish_reason)
         is_bad, reason = _is_bad_output(out, style=style)
         last_reason = "Truncated" if truncated else reason
 
@@ -238,13 +243,14 @@ def generate_styled_caption_from_text(
             return out
 
         if attempt < max_attempts - 1:
-            if reason == "EmptyResponse":
+            if reason in ("EmptyResponse", "MetaLeak"):
                 time.sleep(1)
             continue
 
-        if truncated and out.strip():
+        # Last attempt: keep partial output only for clean truncation, not bad output.
+        if truncated and out.strip() and not is_bad:
             out = out.strip()
-            if out[-1] not in ".!?":
+            if out[-1] not in _VALID_END_CHARS:
                 out = out + "."
             return out
         if is_bad:

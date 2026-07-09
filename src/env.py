@@ -39,5 +39,5 @@ def resolve_frame_count(duration_s: float) -> int:
 
 
 def get_frame_config(duration_s: float = 0.0) -> tuple[int, int]:
-    frame_width = max(get_int_env("FRAME_WIDTH", 512), 64)
+    frame_width = max(get_int_env("FRAME_WIDTH", 384), 64)
     return resolve_frame_count(duration_s), frame_width
