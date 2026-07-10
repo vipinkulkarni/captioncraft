@@ -374,6 +374,180 @@ class _ClipPrefetch:
         self._cancel_pending()
         self._executor.shutdown(wait=False)
 
+    def __enter__(self) -> _ClipPrefetch:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+
+@dataclass
+class _RunContext:
+    dry_run: bool
+    frame_width: int
+    parallel_styles: bool
+    descriptions_cache: dict[str, str]
+    client: OpenAI | None
+    vision_model: str | None
+    caption_model: str | None
+    descriptions_cache_label: str | None = None
+
+
+def _build_run_context(
+    *,
+    client: OpenAI | None,
+    vision_model: str | None,
+    caption_model: str | None,
+) -> _RunContext:
+    dry_run = os.environ.get("DRY_RUN", "0") == "1"
+    _, frame_width = get_frame_config()
+    parallel_styles = os.environ.get("PARALLEL_STYLES", "1") == "1"
+    cache_path_raw = os.environ.get("DESCRIPTIONS_CACHE", "").strip()
+    descriptions_cache: dict[str, str] = {}
+    cache_label: str | None = None
+    if cache_path_raw:
+        cache_path = Path(cache_path_raw)
+        if not cache_path.is_file():
+            raise FileNotFoundError(f"DESCRIPTIONS_CACHE not found: {cache_path}")
+        descriptions_cache = load_descriptions_cache(cache_path)
+        cache_label = str(cache_path)
+    return _RunContext(
+        dry_run=dry_run,
+        frame_width=frame_width,
+        parallel_styles=parallel_styles,
+        descriptions_cache=descriptions_cache,
+        client=client,
+        vision_model=vision_model,
+        caption_model=caption_model,
+        descriptions_cache_label=cache_label,
+    )
+
+
+def _log_config(ctx: _RunContext) -> None:
+    if ctx.descriptions_cache_label:
+        print(f"Using frozen descriptions from {ctx.descriptions_cache_label}", file=sys.stderr)
+    print(
+        f"config: vision={ctx.vision_model} caption={ctx.caption_model} "
+        f"parallel_styles={ctx.parallel_styles} frame_width={ctx.frame_width}px "
+        f"frame_interval_s={os.environ.get('FRAME_INTERVAL_S', '4')} "
+        f"frame_count_min={os.environ.get('FRAME_COUNT_MIN', '8')} "
+        f"frame_count_max={os.environ.get('FRAME_COUNT_MAX', '24')} "
+        f"api_timeout_s={os.environ.get('API_TIMEOUT_S', '45')}",
+        file=sys.stderr,
+    )
+
+
+def _normalize_requested_styles(styles: object) -> list[str]:
+    if not isinstance(styles, list):
+        return []
+    return list(dict.fromkeys(s for s in styles if isinstance(s, str)))
+
+
+def _append_and_persist(results: list[dict], result: dict, results_path: Path) -> None:
+    results.append(result)
+    write_results(results_path, results)
+
+
+def _process_task(
+    *,
+    task: dict,
+    task_index: int,
+    tasks: list[dict],
+    ctx: _RunContext,
+    prefetch: _ClipPrefetch,
+) -> dict:
+    task_id = str(task.get("task_id", ""))
+    video_url = str(task.get("video_url", ""))
+    requested_styles = _normalize_requested_styles(task.get("styles", []))
+
+    if not task_id or not video_url or not requested_styles:
+        if not requested_styles:
+            requested_styles = ["formal"]
+        captions = {
+            style: public_caption("Invalid task input.", style=style)
+            for style in requested_styles
+        }
+        return {"task_id": task_id or "unknown", "captions": captions}
+
+    if ctx.dry_run:
+        return {"task_id": task_id, "captions": dry_run_captions(task_id, requested_styles)}
+
+    if ctx.client is None or ctx.vision_model is None or ctx.caption_model is None:
+        raise RuntimeError("client/vision_model/caption_model required when DRY_RUN=0")
+
+    print(f"Processing {task_id} (describe + {len(requested_styles)} styles)...", file=sys.stderr)
+
+    try:
+        cached_description = ctx.descriptions_cache.get(task_id, "")
+        if cached_description:
+            print(f"  {task_id}: using cached description", file=sys.stderr)
+            description = cached_description
+            download_s = 0.0
+            describe_s = 0.0
+            next_url = _next_prefetch_url(
+                tasks,
+                task_index,
+                descriptions_cache=ctx.descriptions_cache,
+                dry_run=ctx.dry_run,
+            )
+            if next_url:
+                prefetch.schedule(next_url)
+        else:
+            t_dl = time.perf_counter()
+            td, video_path = prefetch.take(video_url)
+            try:
+                print(f"  {task_id}: extracting frames...", file=sys.stderr)
+                frames, duration_s = extract_frames_jpeg(video_path, width=ctx.frame_width)
+                print(
+                    f"  {task_id}: extracted {len(frames)} frames "
+                    f"(duration={duration_s:.1f}s)",
+                    file=sys.stderr,
+                )
+            finally:
+                td.cleanup()
+            download_s = time.perf_counter() - t_dl
+
+            next_url = _next_prefetch_url(
+                tasks,
+                task_index,
+                descriptions_cache=ctx.descriptions_cache,
+                dry_run=ctx.dry_run,
+            )
+            if next_url:
+                prefetch.schedule(next_url)
+
+            t0 = time.perf_counter()
+            print(f"  {task_id}: describing...", file=sys.stderr)
+            description = _describe_frames(
+                client=ctx.client,
+                model=ctx.vision_model,
+                task_id=task_id,
+                frames=frames,
+            )
+            describe_s = time.perf_counter() - t0
+
+        t1 = time.perf_counter()
+        print(f"  {task_id}: captioning styles...", file=sys.stderr)
+        captions = _caption_styles_from_description(
+            client=ctx.client,
+            model=ctx.caption_model,
+            description=description,
+            requested_styles=requested_styles,
+            parallel=ctx.parallel_styles,
+        )
+        caption_s = time.perf_counter() - t1
+        print(
+            f"  {task_id}: done in {download_s + describe_s + caption_s:.1f}s "
+            f"(download={download_s:.1f}s, describe={describe_s:.1f}s, styles={caption_s:.1f}s)",
+            file=sys.stderr,
+        )
+    except Exception as e:
+        err = f"Failed to process video: {type(e).__name__}"
+        print(f"  {task_id}: {err}", file=sys.stderr)
+        captions = {style: public_caption(err, style=style) for style in requested_styles}
+
+    return {"task_id": task_id, "captions": captions}
+
 
 def run_full_tasks(
     *,
@@ -384,136 +558,25 @@ def run_full_tasks(
     caption_model: str | None,
 ) -> None:
     tasks = read_tasks(tasks_path)
-
-    dry_run = os.environ.get("DRY_RUN", "0") == "1"
-    _, frame_width = get_frame_config()
-    parallel_styles = os.environ.get("PARALLEL_STYLES", "1") == "1"
-    cache_path_raw = os.environ.get("DESCRIPTIONS_CACHE", "").strip()
-    descriptions_cache: dict[str, str] = {}
-    if cache_path_raw:
-        cache_path = Path(cache_path_raw)
-        if not cache_path.is_file():
-            raise FileNotFoundError(f"DESCRIPTIONS_CACHE not found: {cache_path}")
-        descriptions_cache = load_descriptions_cache(cache_path)
-        print(f"Using frozen descriptions from {cache_path}", file=sys.stderr)
-    print(
-        f"config: vision={vision_model} caption={caption_model} "
-        f"parallel_styles={parallel_styles} frame_width={frame_width}px "
-        f"frame_interval_s={os.environ.get('FRAME_INTERVAL_S', '4')} "
-        f"frame_count_min={os.environ.get('FRAME_COUNT_MIN', '8')} "
-        f"frame_count_max={os.environ.get('FRAME_COUNT_MAX', '24')} "
-        f"api_timeout_s={os.environ.get('API_TIMEOUT_S', '45')}",
-        file=sys.stderr,
+    ctx = _build_run_context(
+        client=client,
+        vision_model=vision_model,
+        caption_model=caption_model,
     )
+    _log_config(ctx)
 
     results: list[dict] = []
-    prefetch = _ClipPrefetch()
-
-    try:
-        for task_index, task in enumerate(tasks):
-            task_id = str(task.get("task_id", ""))
-            video_url = str(task.get("video_url", ""))
-            styles = task.get("styles", [])
-
-            requested_styles = [s for s in styles if isinstance(s, str)]
-            requested_styles = list(dict.fromkeys(requested_styles))
-
-            captions: dict[str, str] = {}
-
-            if not task_id or not video_url or not requested_styles:
-                if not requested_styles:
-                    requested_styles = ["formal"]
-                for style in requested_styles:
-                    captions[style] = public_caption("Invalid task input.", style=style)
-                results.append({"task_id": task_id or "unknown", "captions": captions})
-                write_results(results_path, results)
-                continue
-
-            if dry_run:
-                captions = dry_run_captions(task_id, requested_styles)
-                results.append({"task_id": task_id, "captions": captions})
-                write_results(results_path, results)
-                continue
-
-            if client is None or vision_model is None or caption_model is None:
-                raise RuntimeError("client/vision_model/caption_model required when DRY_RUN=0")
-
-            print(f"Processing {task_id} (describe + {len(requested_styles)} styles)...", file=sys.stderr)
-
-            try:
-                cached_description = descriptions_cache.get(task_id, "")
-                if cached_description:
-                    print(f"  {task_id}: using cached description", file=sys.stderr)
-                    description = cached_description
-                    download_s = 0.0
-                    describe_s = 0.0
-                    next_url = _next_prefetch_url(
-                        tasks,
-                        task_index,
-                        descriptions_cache=descriptions_cache,
-                        dry_run=dry_run,
-                    )
-                    if next_url:
-                        prefetch.schedule(next_url)
-                else:
-                    t_dl = time.perf_counter()
-                    td, video_path = prefetch.take(video_url)
-                    try:
-                        print(f"  {task_id}: extracting frames...", file=sys.stderr)
-                        frames, duration_s = extract_frames_jpeg(video_path, width=frame_width)
-                        print(
-                            f"  {task_id}: extracted {len(frames)} frames "
-                            f"(duration={duration_s:.1f}s)",
-                            file=sys.stderr,
-                        )
-                    finally:
-                        td.cleanup()
-                    download_s = time.perf_counter() - t_dl
-
-                    next_url = _next_prefetch_url(
-                        tasks,
-                        task_index,
-                        descriptions_cache=descriptions_cache,
-                        dry_run=dry_run,
-                    )
-                    if next_url:
-                        prefetch.schedule(next_url)
-
-                    t0 = time.perf_counter()
-                    print(f"  {task_id}: describing...", file=sys.stderr)
-                    description = _describe_frames(
-                        client=client,
-                        model=vision_model,
-                        task_id=task_id,
-                        frames=frames,
-                    )
-                    describe_s = time.perf_counter() - t0
-
-                t1 = time.perf_counter()
-                print(f"  {task_id}: captioning styles...", file=sys.stderr)
-                captions = _caption_styles_from_description(
-                    client=client,
-                    model=caption_model,
-                    description=description,
-                    requested_styles=requested_styles,
-                    parallel=parallel_styles,
+    with _ClipPrefetch() as prefetch:
+        try:
+            for task_index, task in enumerate(tasks):
+                result = _process_task(
+                    task=task,
+                    task_index=task_index,
+                    tasks=tasks,
+                    ctx=ctx,
+                    prefetch=prefetch,
                 )
-                caption_s = time.perf_counter() - t1
-                print(
-                    f"  {task_id}: done in {download_s + describe_s + caption_s:.1f}s "
-                    f"(download={download_s:.1f}s, describe={describe_s:.1f}s, styles={caption_s:.1f}s)",
-                    file=sys.stderr,
-                )
-            except Exception as e:
-                err = f"Failed to process video: {type(e).__name__}"
-                print(f"  {task_id}: {err}", file=sys.stderr)
-                captions = {
-                    style: public_caption(err, style=style) for style in requested_styles
-                }
-
-            results.append({"task_id": task_id, "captions": captions})
-            write_results(results_path, results)
-    finally:
-        prefetch.close()
-        if results:
-            write_results(results_path, results)
+                _append_and_persist(results, result, results_path)
+        finally:
+            if results:
+                write_results(results_path, results)
