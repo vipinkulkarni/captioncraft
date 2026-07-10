@@ -2,6 +2,5 @@
 .env
 __pycache__/
 misc/
-
-# local-only scratch (kept out of repo)
+docs/
 data/

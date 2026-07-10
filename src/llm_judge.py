@@ -14,15 +14,14 @@ from openai import OpenAI
 
 from src.caption import STYLES, get_fireworks_client
 from src.env import get_int_env
+from src.eval_paths import DESCRIPTIONS_FULL
 from src.pipeline import load_descriptions_cache
 from src.scoring import is_structural_failure
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _JUDGE_STYLE_PROMPT_PATH = _REPO_ROOT / "prompts" / "judge_style.txt"
 _JUDGE_DISTINCTNESS_PROMPT_PATH = _REPO_ROOT / "prompts" / "judge_distinctness.txt"
-_DEFAULT_DESCRIPTIONS_PATH = (
-    _REPO_ROOT / "misc" / "eval" / "eval_fixtures" / "descriptions_eval16.json"
-)
+_DEFAULT_DESCRIPTIONS_PATH = DESCRIPTIONS_FULL
 
 DIMENSIONS = ("style_fit", "accuracy", "specificity")
 _SCORE_FIELD_RE = re.compile(
