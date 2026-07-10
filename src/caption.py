@@ -104,7 +104,8 @@ def _describe_prompt_name() -> str:
 
 _STYLE_STRUCTURED_HINT = (
     "Use at least one color or marking from subjects and at least one action "
-    "from actions_early or actions_late. Do not invent details not present below."
+    "from actions_early or actions_late. Match setting and surfaces exactly "
+    "(water vs ground, indoor vs outdoor). Do not invent details not present below."
 )
 
 _META_LEAK_RETRY_NUDGE = (
