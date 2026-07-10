@@ -1,6 +1,7 @@
+from __future__ import annotations
+
 import json
 import os
-import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from src.caption import (
 from src.env import get_float_env, get_frame_config, get_int_env, resolve_frame_count
 from src.results import DescribeResult, ProcessError, describe_error_from_reason
 from src.retry import RetryPolicy, call_with_retry
+from src.run_log import emit_config_event, emit_event, log_human
 
 
 def read_tasks(path: Path) -> list[dict]:
@@ -216,18 +218,16 @@ def _describe_frames(
             return result.error
         if result.text and not looks_truncated(result.text, result.finish_reason):
             if attempt > 1:
-                print(
+                log_human(
                     f"  {task_id} describe attempt {attempt} ok in {result.elapsed_s:.1f}s",
-                    file=sys.stderr,
                 )
             return None
         return "Truncated" if result.text else "EmptyResponse"
 
     def on_failure(attempt: int, reason: str, result: _DescribeAttempt) -> None:
-        print(
+        log_human(
             f"  {task_id} describe attempt {attempt}/{policy.max_attempts}: "
             f"{reason} in {result.elapsed_s:.1f}s",
-            file=sys.stderr,
         )
 
     last, reasons = call_with_retry(
@@ -272,19 +272,22 @@ def _caption_styles_from_description(
     describe: DescribeResult,
     requested_styles: list[str],
     parallel: bool,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, int]]:
     captions: dict[str, str] = {}
+    style_attempts: dict[str, int] = {}
 
     if not describe.ok:
-        return {
-            style: public_describe_result(describe, style=style) for style in requested_styles
-        }
+        for style in requested_styles:
+            captions[style] = public_describe_result(describe, style=style)
+            style_attempts[style] = 0
+        return captions, style_attempts
 
-    def _one(style: str) -> tuple[str, str]:
+    def _one(style: str) -> tuple[str, str, int]:
         if style not in STYLES:
-            return style, public_process_failure(
-                ProcessError.UNSUPPORTED_STYLE,
-                style=style,
+            return (
+                style,
+                public_process_failure(ProcessError.UNSUPPORTED_STYLE, style=style),
+                0,
             )
         try:
             caption_result = generate_styled_caption_from_text(
@@ -293,27 +296,37 @@ def _caption_styles_from_description(
                 style=style,
                 description=describe.text or "",
             )
-            return style, public_caption_result(caption_result, style=style)
+            return (
+                style,
+                public_caption_result(caption_result, style=style),
+                caption_result.attempts,
+            )
         except Exception as e:
-            print(f"  caption {style} failed: {type(e).__name__}", file=sys.stderr)
-            return style, public_process_failure(
-                ProcessError.PROCESSING,
-                style=style,
-                detail=type(e).__name__,
+            log_human(f"  caption {style} failed: {type(e).__name__}")
+            return (
+                style,
+                public_process_failure(
+                    ProcessError.PROCESSING,
+                    style=style,
+                    detail=type(e).__name__,
+                ),
+                0,
             )
 
     if parallel and len(requested_styles) > 1:
         with ThreadPoolExecutor(max_workers=min(len(requested_styles), 4)) as pool:
             futures = [pool.submit(_one, style) for style in requested_styles]
             for fut in as_completed(futures):
-                style, caption = fut.result()
+                style, caption, attempts = fut.result()
                 captions[style] = caption
+                style_attempts[style] = attempts
     else:
         for style in requested_styles:
-            s, caption = _one(style)
+            s, caption, attempts = _one(style)
             captions[s] = caption
+            style_attempts[s] = attempts
 
-    return captions
+    return captions, style_attempts
 
 
 def _task_needs_video_download(
@@ -451,16 +464,62 @@ def _build_run_context(
 
 def _log_config(ctx: _RunContext) -> None:
     if ctx.descriptions_cache_label:
-        print(f"Using frozen descriptions from {ctx.descriptions_cache_label}", file=sys.stderr)
-    print(
+        log_human(f"Using frozen descriptions from {ctx.descriptions_cache_label}")
+    log_human(
         f"config: vision={ctx.vision_model} caption={ctx.caption_model} "
         f"parallel_styles={ctx.parallel_styles} frame_width={ctx.frame_width}px "
         f"frame_interval_s={os.environ.get('FRAME_INTERVAL_S', '4')} "
         f"frame_count_min={os.environ.get('FRAME_COUNT_MIN', '8')} "
         f"frame_count_max={os.environ.get('FRAME_COUNT_MAX', '24')} "
         f"api_timeout_s={os.environ.get('API_TIMEOUT_S', '45')}",
-        file=sys.stderr,
     )
+    emit_config_event(
+        vision=ctx.vision_model,
+        caption=ctx.caption_model,
+        parallel_styles=ctx.parallel_styles,
+        frame_width=ctx.frame_width,
+        frame_interval_s=os.environ.get("FRAME_INTERVAL_S", "4"),
+        frame_count_min=os.environ.get("FRAME_COUNT_MIN", "8"),
+        frame_count_max=os.environ.get("FRAME_COUNT_MAX", "24"),
+        api_timeout_s=os.environ.get("API_TIMEOUT_S", "45"),
+        descriptions_cache=ctx.descriptions_cache_label,
+    )
+
+
+def _emit_task_event(
+    *,
+    task_id: str,
+    stage: str,
+    download_s: float = 0.0,
+    describe_s: float = 0.0,
+    styles_s: float = 0.0,
+    frames: int = 0,
+    video_duration_s: float | None = None,
+    describe_attempts: int = 0,
+    style_attempts: dict[str, int] | None = None,
+    describe_error: str | None = None,
+    process_error: str | None = None,
+) -> None:
+    total_s = download_s + describe_s + styles_s
+    event: dict[str, object] = {
+        "stage": stage,
+        "task_id": task_id,
+        "download_s": round(download_s, 3),
+        "describe_s": round(describe_s, 3),
+        "styles_s": round(styles_s, 3),
+        "total_s": round(total_s, 3),
+        "frames": frames,
+        "describe_attempts": describe_attempts,
+    }
+    if video_duration_s is not None:
+        event["video_duration_s"] = round(video_duration_s, 3)
+    if style_attempts is not None:
+        event["style_attempts"] = style_attempts
+    if describe_error is not None:
+        event["describe_error"] = describe_error
+    if process_error is not None:
+        event["process_error"] = process_error
+    emit_event(event)
 
 
 def _normalize_requested_styles(styles: object) -> list[str]:
@@ -493,23 +552,31 @@ def _process_task(
             style: public_process_failure(ProcessError.INVALID_TASK, style=style)
             for style in requested_styles
         }
+        _emit_task_event(task_id=task_id or "unknown", stage="invalid")
         return {"task_id": task_id or "unknown", "captions": captions}
 
     if ctx.dry_run:
+        _emit_task_event(task_id=task_id, stage="dry_run")
         return {"task_id": task_id, "captions": dry_run_captions(task_id, requested_styles)}
 
     if ctx.client is None or ctx.vision_model is None or ctx.caption_model is None:
         raise RuntimeError("client/vision_model/caption_model required when DRY_RUN=0")
 
-    print(f"Processing {task_id} (describe + {len(requested_styles)} styles)...", file=sys.stderr)
+    log_human(f"Processing {task_id} (describe + {len(requested_styles)} styles)...")
+
+    download_s = 0.0
+    describe_s = 0.0
+    caption_s = 0.0
+    frames_count = 0
+    video_duration_s: float | None = None
+    describe = DescribeResult(text=None, error=None)
+    style_attempts: dict[str, int] = {}
 
     try:
         cached_description = ctx.descriptions_cache.get(task_id, "")
         if cached_description:
-            print(f"  {task_id}: using cached description", file=sys.stderr)
+            log_human(f"  {task_id}: using cached description")
             describe = DescribeResult(text=cached_description, error=None)
-            download_s = 0.0
-            describe_s = 0.0
             next_url = _next_prefetch_url(
                 tasks,
                 task_index,
@@ -522,12 +589,13 @@ def _process_task(
             t_dl = time.perf_counter()
             td, video_path = prefetch.take(video_url)
             try:
-                print(f"  {task_id}: extracting frames...", file=sys.stderr)
+                log_human(f"  {task_id}: extracting frames...")
                 frames, duration_s = extract_frames_jpeg(video_path, width=ctx.frame_width)
-                print(
-                    f"  {task_id}: extracted {len(frames)} frames "
+                frames_count = len(frames)
+                video_duration_s = duration_s
+                log_human(
+                    f"  {task_id}: extracted {frames_count} frames "
                     f"(duration={duration_s:.1f}s)",
-                    file=sys.stderr,
                 )
             finally:
                 td.cleanup()
@@ -543,7 +611,7 @@ def _process_task(
                 prefetch.schedule(next_url)
 
             t0 = time.perf_counter()
-            print(f"  {task_id}: describing...", file=sys.stderr)
+            log_human(f"  {task_id}: describing...")
             describe = _describe_frames(
                 client=ctx.client,
                 model=ctx.vision_model,
@@ -553,8 +621,8 @@ def _process_task(
             describe_s = time.perf_counter() - t0
 
         t1 = time.perf_counter()
-        print(f"  {task_id}: captioning styles...", file=sys.stderr)
-        captions = _caption_styles_from_description(
+        log_human(f"  {task_id}: captioning styles...")
+        captions, style_attempts = _caption_styles_from_description(
             client=ctx.client,
             model=ctx.caption_model,
             describe=describe,
@@ -562,13 +630,24 @@ def _process_task(
             parallel=ctx.parallel_styles,
         )
         caption_s = time.perf_counter() - t1
-        print(
+        log_human(
             f"  {task_id}: done in {download_s + describe_s + caption_s:.1f}s "
             f"(download={download_s:.1f}s, describe={describe_s:.1f}s, styles={caption_s:.1f}s)",
-            file=sys.stderr,
+        )
+        _emit_task_event(
+            task_id=task_id,
+            stage="complete",
+            download_s=download_s,
+            describe_s=describe_s,
+            styles_s=caption_s,
+            frames=frames_count,
+            video_duration_s=video_duration_s,
+            describe_attempts=describe.attempts,
+            style_attempts=style_attempts,
+            describe_error=describe.error.value if describe.error else None,
         )
     except Exception as e:
-        print(f"  {task_id}: Failed to process video: {type(e).__name__}", file=sys.stderr)
+        log_human(f"  {task_id}: Failed to process video: {type(e).__name__}")
         captions = {
             style: public_process_failure(
                 ProcessError.PROCESSING,
@@ -577,6 +656,19 @@ def _process_task(
             )
             for style in requested_styles
         }
+        _emit_task_event(
+            task_id=task_id,
+            stage="error",
+            download_s=download_s,
+            describe_s=describe_s,
+            styles_s=caption_s,
+            frames=frames_count,
+            video_duration_s=video_duration_s,
+            describe_attempts=describe.attempts,
+            style_attempts=style_attempts or None,
+            describe_error=describe.error.value if describe.error else None,
+            process_error=type(e).__name__,
+        )
 
     return {"task_id": task_id, "captions": captions}
 
