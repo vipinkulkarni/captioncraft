@@ -9,6 +9,7 @@ COPY src/ src/
 COPY prompts/ prompts/
 
 # Hackathon injects nothing at runtime — bake credentials and models at build time
+# (Track 2: "use your own credentials inside the container")
 ARG FIREWORKS_API_KEY
 ARG VISION_MODEL=accounts/fireworks/models/minimax-m3
 ARG CAPTION_MODEL=accounts/fireworks/models/deepseek-v4-flash
