@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -21,6 +22,7 @@ from src.caption import (
     vision_describe_call,
 )
 from src.env import get_float_env, get_frame_config, get_int_env, resolve_frame_count
+from src.retry import RetryPolicy, call_with_retry
 
 
 def read_tasks(path: Path) -> list[dict]:
@@ -159,6 +161,14 @@ def extract_frames_jpeg(
     return frames, duration_s
 
 
+@dataclass
+class _DescribeAttempt:
+    text: str
+    finish_reason: str | None
+    elapsed_s: float = 0.0
+    error: str | None = None
+
+
 def _describe_frames(
     *,
     client: OpenAI,
@@ -168,16 +178,16 @@ def _describe_frames(
 ) -> str:
     base_max = max(get_int_env("DESCRIBE_MAX_TOKENS", 1200), 64)
     temperature = get_float_env("DESCRIBE_TEMPERATURE", 0.2)
-    max_attempts = max(get_int_env("DESCRIBE_MAX_ATTEMPTS", 2), 1)
-    retry_sleep_s = get_float_env("DESCRIBE_RETRY_SLEEP_S", 1.5)
+    policy = RetryPolicy(
+        max_attempts=max(get_int_env("DESCRIBE_MAX_ATTEMPTS", 2), 1),
+        base_sleep_s=get_float_env("DESCRIBE_RETRY_SLEEP_S", 1.5),
+        jitter_s=get_float_env("RETRY_JITTER_S", 0.5),
+    )
 
-    last_error = ""
-    last_text = ""
-
-    for attempt in range(1, max_attempts + 1):
-        max_tokens = base_max + (300 if attempt > 1 else 0)
+    def attempt_fn(attempt: int) -> _DescribeAttempt:
         t0 = time.perf_counter()
         try:
+            max_tokens = base_max + (300 if attempt > 1 else 0)
             text, finish_reason = vision_describe_call(
                 client=client,
                 model=model,
@@ -185,36 +195,53 @@ def _describe_frames(
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
-            elapsed = time.perf_counter() - t0
-            if text and not looks_truncated(text, finish_reason):
-                if attempt > 1:
-                    print(
-                        f"  {task_id} describe attempt {attempt} ok in {elapsed:.1f}s",
-                        file=sys.stderr,
-                    )
-                return text
-            last_text = text
-            last_error = "Truncated" if text else "EmptyResponse"
-            print(
-                f"  {task_id} describe attempt {attempt}/{max_attempts}: "
-                f"{last_error} in {elapsed:.1f}s",
-                file=sys.stderr,
+            return _DescribeAttempt(
+                text=text,
+                finish_reason=finish_reason,
+                elapsed_s=time.perf_counter() - t0,
             )
         except Exception as e:
-            elapsed = time.perf_counter() - t0
-            last_error = type(e).__name__
-            print(
-                f"  {task_id} describe attempt {attempt}/{max_attempts} failed: "
-                f"{last_error} in {elapsed:.1f}s",
-                file=sys.stderr,
+            return _DescribeAttempt(
+                text="",
+                finish_reason=None,
+                elapsed_s=time.perf_counter() - t0,
+                error=type(e).__name__,
             )
-        if attempt < max_attempts:
-            time.sleep(retry_sleep_s)
 
-    if last_text and last_error == "Truncated":
-        return last_text
+    def classify(attempt: int, result: _DescribeAttempt) -> str | None:
+        if result.error:
+            return result.error
+        if result.text and not looks_truncated(result.text, result.finish_reason):
+            if attempt > 1:
+                print(
+                    f"  {task_id} describe attempt {attempt} ok in {result.elapsed_s:.1f}s",
+                    file=sys.stderr,
+                )
+            return None
+        return "Truncated" if result.text else "EmptyResponse"
 
-    return f"Failed to describe video: {last_error or 'EmptyResponse'}"
+    def on_failure(attempt: int, reason: str, result: _DescribeAttempt) -> None:
+        print(
+            f"  {task_id} describe attempt {attempt}/{policy.max_attempts}: "
+            f"{reason} in {result.elapsed_s:.1f}s",
+            file=sys.stderr,
+        )
+
+    last, reasons = call_with_retry(
+        policy=policy,
+        attempt=attempt_fn,
+        classify=classify,
+        on_failure=on_failure,
+    )
+
+    if not reasons:
+        return last.text
+
+    last_reason = reasons[-1]
+    if last.text and last_reason == "Truncated":
+        return last.text
+
+    return f"Failed to describe video: {last_reason or 'EmptyResponse'}"
 
 
 def _caption_styles_from_description(

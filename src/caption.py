@@ -1,7 +1,7 @@
 import os
 import base64
 import functools
-import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from src.env import get_float_env, get_int_env
+from src.retry import RetryPolicy, call_with_retry
 
 # Load repo-root .env reliably (Streamlit/other runners may change CWD).
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -196,6 +197,15 @@ def _is_bad_output(output: str, *, style: str = "") -> tuple[bool, str]:
     return False, ""
 
 
+@dataclass
+class _StyleAttempt:
+    out: str
+    finish_reason: str | None
+    is_bad: bool
+    bad_reason: str
+    truncated: bool
+
+
 def vision_describe_call(
     *,
     client: OpenAI,
@@ -256,20 +266,23 @@ def generate_styled_caption_from_text(
     system_prompt = load_prompt(style)
     base_max = max(get_int_env("STYLE_MAX_TOKENS", get_int_env("MAX_TOKENS", 140)), 32)
     base_temp = _STYLE_TEMPERATURE.get(style, get_float_env("TEMPERATURE", 0.75))
-    max_attempts = max(get_int_env("STYLE_MAX_ATTEMPTS", 2), 1)
+    policy = RetryPolicy(
+        max_attempts=max(get_int_env("STYLE_MAX_ATTEMPTS", 2), 1),
+        base_sleep_s=1.0,
+        jitter_s=get_float_env("RETRY_JITTER_S", 0.5),
+    )
     user_prompt = f"Video description:\n{description}"
-
-    last_out = ""
     last_reason = "EmptyResponse"
 
-    for attempt in range(max_attempts):
-        if attempt == 0:
+    def attempt_fn(attempt: int) -> _StyleAttempt:
+        nonlocal last_reason
+        if attempt == 1:
             max_tokens = base_max
-        elif last_reason == "Truncated" or looks_truncated(last_out, "length"):
+        elif last_reason == "Truncated":
             max_tokens = base_max + 220
         else:
             max_tokens = base_max + 60
-        temperature = min(max(base_temp - attempt * 0.08, 0.2), 0.97)
+        temperature = min(max(base_temp - (attempt - 1) * 0.08, 0.2), 0.97)
 
         resp = client.chat.completions.create(
             model=model,
@@ -283,30 +296,53 @@ def generate_styled_caption_from_text(
         choice = resp.choices[0]
         out = _strip_wrapping_quotes((choice.message.content or "").strip())
         finish_reason = choice.finish_reason
-        last_out = out
-
         truncated = looks_truncated(out, finish_reason)
         is_bad, reason = _is_bad_output(out, style=style)
         last_reason = "Truncated" if truncated else reason
+        return _StyleAttempt(
+            out=out,
+            finish_reason=finish_reason,
+            is_bad=is_bad,
+            bad_reason=reason,
+            truncated=truncated,
+        )
 
-        if not truncated and not is_bad:
-            return out
+    def classify(attempt: int, result: _StyleAttempt) -> str | None:
+        if not result.truncated and not result.is_bad:
+            return None
+        if (
+            attempt == policy.max_attempts
+            and result.truncated
+            and result.out.strip()
+            and not result.is_bad
+        ):
+            return None
+        return "Truncated" if result.truncated else result.bad_reason or "EmptyResponse"
 
-        if attempt < max_attempts - 1:
-            if reason in ("EmptyResponse", "MetaLeak"):
-                time.sleep(1)
-            continue
+    def should_sleep(_attempt: int, reason: str) -> bool:
+        return reason in ("EmptyResponse", "MetaLeak")
 
-        # Last attempt: keep partial output only for clean truncation, not bad output.
-        if truncated and out.strip() and not is_bad:
-            out = out.strip()
-            if out[-1] not in _VALID_END_CHARS:
-                out = out + "."
-            return out
-        if is_bad:
-            return f"{_CAPTION_FAILURE_PREFIX} {reason}"
+    last, reasons = call_with_retry(
+        policy=policy,
+        attempt=attempt_fn,
+        classify=classify,
+        should_sleep=should_sleep,
+    )
 
-    return last_out or f"{_CAPTION_FAILURE_PREFIX} EmptyResponse"
+    if not reasons:
+        out = last.out
+        if last.truncated and out.strip() and out[-1] not in _VALID_END_CHARS:
+            out = out.strip() + "."
+        return out
+
+    if last.truncated and last.out.strip() and not last.is_bad:
+        out = last.out.strip()
+        if out[-1] not in _VALID_END_CHARS:
+            out = out + "."
+        return out
+    if last.is_bad:
+        return f"{_CAPTION_FAILURE_PREFIX} {last.bad_reason or reasons[-1]}"
+    return last.out or f"{_CAPTION_FAILURE_PREFIX} EmptyResponse"
 
 
 def dry_run_captions(task_id: str, styles: list[str]) -> dict[str, str]:
