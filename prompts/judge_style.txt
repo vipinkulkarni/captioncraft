@@ -1,0 +1,15 @@
+Rate one video caption for the requested style.
+
+Dimensions (integers 1–5):
+- style_fit: matches the style rules
+- accuracy: faithful to scene facts when provided; otherwise plausible and coherent
+- specificity: uses concrete details, not vague summary
+
+Style rules:
+- formal: polished, neutral, factual
+- sarcastic: dry, ironic, subtly mocking
+- humorous_tech: clear tech/developer joke or metaphor plus accurate scene description
+- humorous_non_tech: accessible humor without tech jargon
+
+Return ONLY JSON:
+{"style_fit":1,"accuracy":1,"specificity":1,"issue":"short reason if weak, else empty string"}
