@@ -23,6 +23,12 @@ _JUDGE_STYLE_PROMPT_PATH = _REPO_ROOT / "prompts" / "judge_style.txt"
 _JUDGE_DISTINCTNESS_PROMPT_PATH = _REPO_ROOT / "prompts" / "judge_distinctness.txt"
 _DEFAULT_DESCRIPTIONS_PATH = DESCRIPTIONS_FULL
 
+DEFAULT_JUDGE_PANEL_MODELS = (
+    "accounts/fireworks/models/gpt-oss-120b",
+    "accounts/fireworks/models/kimi-k2-6",
+    "accounts/fireworks/models/glm-5-1",
+)
+
 DIMENSIONS = ("style_fit", "accuracy", "specificity")
 _SCORE_FIELD_RE = re.compile(
     r'"(style_fit|accuracy|specificity)"\s*:\s*(\d+)',
@@ -77,6 +83,12 @@ class JudgeFileResult:
     model: str
     min_score: int
     descriptions_provided: bool
+    panel_models: list[str] = field(default_factory=list)
+    per_judge: dict[str, "JudgeFileResult"] = field(default_factory=dict)
+
+    @property
+    def is_panel(self) -> bool:
+        return bool(self.panel_models)
 
     @property
     def passes(self) -> int:
@@ -170,6 +182,92 @@ def _clamp_score(value: Any) -> int:
     except (TypeError, ValueError):
         return 0
     return max(1, min(5, score))
+
+
+def _median_int(values: list[int]) -> int:
+    if not values:
+        return 0
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return int(round((ordered[mid - 1] + ordered[mid]) / 2))
+
+
+def resolve_judge_models(*, panel: bool = False, override: list[str] | None = None) -> list[str]:
+    if override:
+        models = [m.strip() for m in override if m.strip()]
+        if models:
+            return models
+    env_panel = os.environ.get("JUDGE_MODELS", "").strip()
+    if env_panel:
+        models = [m.strip() for m in env_panel.split(",") if m.strip()]
+        if models:
+            return models
+    if panel:
+        return list(DEFAULT_JUDGE_PANEL_MODELS)
+    single = os.environ.get("JUDGE_MODEL", "").strip()
+    if not single:
+        single = os.environ.get("CAPTION_MODEL", "accounts/fireworks/models/deepseek-v4-flash")
+    return [single]
+
+
+def _model_short_name(model: str) -> str:
+    return model.rsplit("/", 1)[-1]
+
+
+def aggregate_clip_judges(per_judge: dict[str, ClipJudgeResult]) -> ClipJudgeResult:
+    if not per_judge:
+        raise ValueError("per_judge must not be empty")
+    task_id = next(iter(per_judge.values())).task_id
+    aggregated = ClipJudgeResult(task_id=task_id)
+
+    for style in STYLES:
+        active_scores: list[CaptionJudgeScore] = []
+        skip_reasons: list[str] = []
+        for clip in per_judge.values():
+            score = clip.captions.get(style)
+            if score is None:
+                continue
+            if score.skipped:
+                if score.skip_reason:
+                    skip_reasons.append(score.skip_reason)
+                continue
+            active_scores.append(score)
+
+        if not active_scores:
+            reason = skip_reasons[0] if skip_reasons else "judge-missing-style"
+            aggregated.captions[style] = CaptionJudgeScore(
+                style=style,
+                style_fit=0,
+                accuracy=0,
+                specificity=0,
+                issue=reason,
+                skipped=True,
+                skip_reason=reason,
+            )
+            continue
+
+        issues = [s.issue for s in active_scores if s.issue]
+        aggregated.captions[style] = CaptionJudgeScore(
+            style=style,
+            style_fit=_median_int([s.style_fit for s in active_scores]),
+            accuracy=_median_int([s.accuracy for s in active_scores]),
+            specificity=_median_int([s.specificity for s in active_scores]),
+            issue="; ".join(dict.fromkeys(issues))[:240],
+        )
+
+    distinctness_vals = [
+        clip.cross_style_distinctness
+        for clip in per_judge.values()
+        if clip.cross_style_distinctness
+    ]
+    aggregated.cross_style_distinctness = _median_int(distinctness_vals)
+    notes = [clip.distinctness_note for clip in per_judge.values() if clip.distinctness_note]
+    aggregated.distinctness_note = notes[0] if notes else ""
+    parse_errors = [clip.parse_error for clip in per_judge.values() if clip.parse_error]
+    aggregated.parse_error = "; ".join(dict.fromkeys(parse_errors))
+    return aggregated
 
 
 def _auto_skip_caption(text: str, style: str) -> CaptionJudgeScore | None:
@@ -480,20 +578,65 @@ def judge_results_data(
     )
 
 
-def judge_file(path: Path, *, descriptions_path: Path | None = None) -> JudgeFileResult:
+def judge_results_data_panel(
+    data: list[dict],
+    *,
+    descriptions: dict[str, str] | None = None,
+    client: OpenAI | None = None,
+    models: list[str] | None = None,
+    min_score: int | None = None,
+) -> JudgeFileResult:
+    panel_models = resolve_judge_models(panel=True, override=models)
+    per_judge: dict[str, JudgeFileResult] = {}
+    for judge_model in panel_models:
+        per_judge[judge_model] = judge_results_data(
+            data,
+            descriptions=descriptions,
+            client=client,
+            model=judge_model,
+            min_score=min_score,
+        )
+
+    aggregated_clips: list[ClipJudgeResult] = []
+    for index in range(len(data)):
+        per_clip = {model: result.clips[index] for model, result in per_judge.items()}
+        aggregated_clips.append(aggregate_clip_judges(per_clip))
+
+    threshold = min_score if min_score is not None else get_int_env("JUDGE_MIN_SCORE", 3)
+    model_label = "panel(median): " + ", ".join(_model_short_name(m) for m in panel_models)
+    return JudgeFileResult(
+        clips=aggregated_clips,
+        model=model_label,
+        min_score=threshold,
+        descriptions_provided=bool(descriptions),
+        panel_models=panel_models,
+        per_judge=per_judge,
+    )
+
+
+def judge_file(
+    path: Path,
+    *,
+    descriptions_path: Path | None = None,
+    panel: bool = False,
+    judge_models: list[str] | None = None,
+) -> JudgeFileResult:
     data = json.loads(path.read_text(encoding="utf-8"))
     resolved = resolve_descriptions_path(descriptions_path)
     descriptions = load_descriptions(resolved) if resolved else {}
+    if panel:
+        return judge_results_data_panel(data, descriptions=descriptions, models=judge_models)
     return judge_results_data(data, descriptions=descriptions)
 
 
 def judge_result_to_dict(result: JudgeFileResult) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "model": result.model,
         "min_score": result.min_score,
         "descriptions_provided": result.descriptions_provided,
         "passes": result.passes,
         "total": result.total,
+        "panel_models": list(result.panel_models),
         "clips": [
             {
                 "task_id": clip.task_id,
@@ -507,6 +650,81 @@ def judge_result_to_dict(result: JudgeFileResult) -> dict[str, Any]:
             for clip in result.clips
         ],
     }
+    if result.per_judge:
+        payload["per_judge"] = {
+            model: {
+                "passes": sub.passes,
+                "total": sub.total,
+                "model": sub.model,
+            }
+            for model, sub in result.per_judge.items()
+        }
+    return payload
+
+
+def collect_calibration_samples(
+    result: JudgeFileResult,
+    data: list[dict],
+    *,
+    limit: int = 15,
+) -> list[dict[str, Any]]:
+    """Borderline captions near the pass threshold for human spot-check."""
+    by_id = {str(task["task_id"]): task for task in data}
+    samples: list[tuple[float, dict[str, Any]]] = []
+
+    for clip in result.clips:
+        task = by_id.get(clip.task_id, {})
+        captions = task.get("captions") or {}
+        for style, score in clip.captions.items():
+            if score.skipped:
+                continue
+            min_dim = min(score.style_fit, score.accuracy, score.specificity)
+            passed = score.passes(min_score=result.min_score)
+            near_threshold = (
+                min_dim in {result.min_score - 1, result.min_score, result.min_score + 1}
+                or abs(score.average - result.min_score) <= 0.75
+            )
+            if not near_threshold:
+                continue
+            distance = abs(min_dim - result.min_score) + abs(score.average - result.min_score) * 0.25
+            if not passed:
+                distance -= 0.1
+            samples.append(
+                (
+                    distance,
+                    {
+                        "task_id": clip.task_id,
+                        "style": style,
+                        "passed": passed,
+                        "style_fit": score.style_fit,
+                        "accuracy": score.accuracy,
+                        "specificity": score.specificity,
+                        "issue": score.issue,
+                        "caption": str(captions.get(style, "")),
+                    },
+                )
+            )
+
+    samples.sort(key=lambda item: item[0])
+    return [item[1] for item in samples[:limit]]
+
+
+def format_calibration_report(samples: list[dict[str, Any]]) -> str:
+    if not samples:
+        return "No borderline captions found near the current threshold."
+    lines = [f"Borderline captions for human spot-check ({len(samples)}):", ""]
+    for index, sample in enumerate(samples, start=1):
+        verdict = "PASS" if sample["passed"] else "FAIL"
+        lines.append(f"{index}. [{verdict}] {sample['task_id']}/{sample['style']}")
+        lines.append(
+            f"   scores: style_fit={sample['style_fit']} "
+            f"accuracy={sample['accuracy']} specificity={sample['specificity']}"
+        )
+        if sample.get("issue"):
+            lines.append(f"   issue: {sample['issue']}")
+        lines.append(f"   caption: {sample['caption']}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 def format_judge_summary(result: JudgeFileResult) -> str:
@@ -514,6 +732,10 @@ def format_judge_summary(result: JudgeFileResult) -> str:
         f"{result.passes}/{result.total}",
         f"  (judge min={result.min_score}, model={result.model})",
     ]
+    if result.is_panel and result.per_judge:
+        lines.append("  per-judge:")
+        for model, sub in result.per_judge.items():
+            lines.append(f"    {_model_short_name(model)}: {sub.passes}/{sub.total}")
     if not result.descriptions_provided:
         lines.append("  (no scene facts — accuracy is plausibility-only)")
     for fail in result.failures():

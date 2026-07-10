@@ -6,10 +6,14 @@ from src.llm_judge import (
     CaptionJudgeScore,
     ClipJudgeResult,
     JudgeFileResult,
+    aggregate_clip_judges,
+    collect_calibration_samples,
+    format_calibration_report,
     format_judge_summary,
     judge_result_to_dict,
     parse_judge_response,
     parse_style_judge_response,
+    resolve_judge_models,
 )
 
 
@@ -151,3 +155,84 @@ class TestJudgePassLogic:
         assert "judge: 1/2" in text or "1/2" in text
         exported = judge_result_to_dict(result)
         assert exported["passes"] == 1
+
+
+class TestPanelAggregation:
+    def test_median_aggregate_clip(self):
+        judge_a = ClipJudgeResult(
+            task_id="e01",
+            captions={
+                "formal": CaptionJudgeScore(style="formal", style_fit=4, accuracy=4, specificity=4),
+                "humorous_tech": CaptionJudgeScore(
+                    style="humorous_tech", style_fit=2, accuracy=4, specificity=4
+                ),
+            },
+            cross_style_distinctness=4,
+        )
+        judge_b = ClipJudgeResult(
+            task_id="e01",
+            captions={
+                "formal": CaptionJudgeScore(style="formal", style_fit=2, accuracy=3, specificity=3),
+                "humorous_tech": CaptionJudgeScore(
+                    style="humorous_tech", style_fit=3, accuracy=3, specificity=3, issue="weak joke"
+                ),
+            },
+            cross_style_distinctness=2,
+        )
+        aggregated = aggregate_clip_judges({"a": judge_a, "b": judge_b})
+        assert aggregated.captions["formal"].style_fit == 3
+        assert aggregated.captions["formal"].accuracy == 4
+        assert aggregated.captions["humorous_tech"].style_fit == 2
+        assert aggregated.captions["humorous_tech"].accuracy == 4
+        assert aggregated.cross_style_distinctness == 3
+
+    def test_panel_summary_lists_per_judge(self):
+        sub = JudgeFileResult(
+            clips=[],
+            model="accounts/fireworks/models/gpt-oss-120b",
+            min_score=3,
+            descriptions_provided=True,
+        )
+        result = JudgeFileResult(
+            clips=[],
+            model="panel(median): gpt-oss-120b, kimi-k2-6",
+            min_score=3,
+            descriptions_provided=True,
+            panel_models=[
+                "accounts/fireworks/models/gpt-oss-120b",
+                "accounts/fireworks/models/kimi-k2-6",
+            ],
+            per_judge={"accounts/fireworks/models/gpt-oss-120b": sub},
+        )
+        text = format_judge_summary(result)
+        assert "per-judge:" in text
+        assert "gpt-oss-120b" in text
+
+    def test_resolve_panel_models_default(self, monkeypatch):
+        monkeypatch.delenv("JUDGE_MODELS", raising=False)
+        monkeypatch.delenv("JUDGE_MODEL", raising=False)
+        models = resolve_judge_models(panel=True)
+        assert len(models) == 3
+
+    def test_calibration_collects_near_threshold(self):
+        clip = ClipJudgeResult(
+            task_id="e01",
+            captions={
+                "formal": CaptionJudgeScore(style="formal", style_fit=3, accuracy=3, specificity=3),
+                "humorous_tech": CaptionJudgeScore(
+                    style="humorous_tech", style_fit=5, accuracy=5, specificity=5
+                ),
+            },
+        )
+        result = JudgeFileResult(
+            clips=[clip],
+            model="test",
+            min_score=3,
+            descriptions_provided=False,
+        )
+        data = [{"task_id": "e01", "captions": {"formal": "A formal caption.", "humorous_tech": "Great joke."}}]
+        samples = collect_calibration_samples(result, data, limit=5)
+        assert len(samples) == 1
+        assert samples[0]["style"] == "formal"
+        report = format_calibration_report(samples)
+        assert "e01/formal" in report
