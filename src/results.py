@@ -52,7 +52,7 @@ PROCESS_FAILURE_PREFIX = "Failed to process video:"
 def describe_error_from_reason(reason: str) -> DescribeError:
     if reason in ("EmptyResponse", "empty"):
         return DescribeError.EMPTY
-    if reason in ("Truncated", "truncated"):
+    if reason in ("Truncated", "truncated", "InvalidJSON"):
         return DescribeError.TRUNCATED
     if "timeout" in reason.lower():
         return DescribeError.TIMEOUT
@@ -77,6 +77,7 @@ class DescribeResult:
     error_detail: str = ""
     attempts: int = 0
     total_ms: float = 0.0
+    raw_json: str | None = None
 
     @property
     def ok(self) -> bool:

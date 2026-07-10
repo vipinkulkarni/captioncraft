@@ -21,8 +21,10 @@ from src.caption import (
     public_describe_result,
     public_process_failure,
     looks_truncated,
+    structured_describe_enabled,
     vision_describe_call,
 )
+from src.describe_schema import parse_describe_json
 from src.env import get_float_env, get_frame_config, get_int_env, resolve_frame_count
 from src.results import DescribeResult, ProcessError, describe_error_from_reason
 from src.retry import RetryPolicy, call_with_retry
@@ -173,6 +175,30 @@ class _DescribeAttempt:
     error: str | None = None
 
 
+def _describe_output_issue(text: str, finish_reason: str | None) -> str | None:
+    if not text.strip():
+        return "EmptyResponse"
+    if structured_describe_enabled():
+        if finish_reason == "length":
+            return "Truncated"
+        ok, reason, _formatted = parse_describe_json(text)
+        if not ok:
+            return reason or "InvalidJSON"
+        return None
+    if looks_truncated(text, finish_reason):
+        return "Truncated" if text else "EmptyResponse"
+    return None
+
+
+def _finalize_describe_text(raw_text: str) -> tuple[str | None, str | None, str | None]:
+    if structured_describe_enabled():
+        ok, reason, formatted = parse_describe_json(raw_text)
+        if not ok:
+            return None, reason or "InvalidJSON", None
+        return formatted, None, raw_text
+    return raw_text, None, None
+
+
 def _describe_frames(
     *,
     client: OpenAI,
@@ -199,6 +225,7 @@ def _describe_frames(
                 frames_jpeg=frames,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                json_mode=structured_describe_enabled(),
             )
             return _DescribeAttempt(
                 text=text,
@@ -216,13 +243,14 @@ def _describe_frames(
     def classify(attempt: int, result: _DescribeAttempt) -> str | None:
         if result.error:
             return result.error
-        if result.text and not looks_truncated(result.text, result.finish_reason):
+        issue = _describe_output_issue(result.text, result.finish_reason)
+        if issue is None:
             if attempt > 1:
                 log_human(
                     f"  {task_id} describe attempt {attempt} ok in {result.elapsed_s:.1f}s",
                 )
             return None
-        return "Truncated" if result.text else "EmptyResponse"
+        return issue
 
     def on_failure(attempt: int, reason: str, result: _DescribeAttempt) -> None:
         log_human(
@@ -240,21 +268,26 @@ def _describe_frames(
     attempts = len(reasons) + 1 if not reasons else len(reasons)
 
     if not reasons:
+        text, _issue, raw_json = _finalize_describe_text(last.text)
         return DescribeResult(
-            text=last.text,
+            text=text,
             error=None,
             attempts=attempts,
             total_ms=total_ms,
+            raw_json=raw_json,
         )
 
     last_reason = reasons[-1]
     if last.text and last_reason == "Truncated":
-        return DescribeResult(
-            text=last.text,
-            error=None,
-            attempts=attempts,
-            total_ms=total_ms,
-        )
+        text, _issue, raw_json = _finalize_describe_text(last.text)
+        if text:
+            return DescribeResult(
+                text=text,
+                error=None,
+                attempts=attempts,
+                total_ms=total_ms,
+                raw_json=raw_json,
+            )
 
     return DescribeResult(
         text=None,
@@ -483,6 +516,7 @@ def _log_config(ctx: _RunContext) -> None:
         frame_count_max=os.environ.get("FRAME_COUNT_MAX", "24"),
         api_timeout_s=os.environ.get("API_TIMEOUT_S", "45"),
         descriptions_cache=ctx.descriptions_cache_label,
+        structured_describe=structured_describe_enabled(),
     )
 
 

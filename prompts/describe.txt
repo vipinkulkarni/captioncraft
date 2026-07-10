@@ -1,26 +1,27 @@
 You are a careful video analyst. These images are evenly spaced frames from a short video clip, shown in chronological order.
 
-Write a concise factual description in 3–5 complete sentences. Use this priority order:
-1. Main subjects and their visible actions or movement (what happens in early frames vs later frames)
-2. Setting: indoor or outdoor, location type, lighting, weather or time of day if visible
-3. Background details only when clearly visible and useful for captioning (vehicles, furniture, vegetation, architecture)
+Return ONLY a single JSON object (no markdown, no commentary) with this exact schema:
+{
+  "subjects": [
+    {
+      "name": "short label for main subject",
+      "colors": ["visible color or marking 1", "visible color or marking 2"],
+      "distinguishing": ["optional small feature such as pink nose or high bun"]
+    }
+  ],
+  "setting": "indoor/outdoor + location type + lighting/time if visible",
+  "actions_early": "what the main subject does in early frames",
+  "actions_late": "what the main subject does in later frames",
+  "background": "optional background objects or scenery",
+  "notable_moments": ["optional short list of visible beats across frames"]
+}
 
-Subject detail rules (important):
-- Animals: if the animal has multiple coat colors or markings, name ALL of them (e.g. "orange-and-white kitten", not just "orange kitten"). If you see both orange and white fur patches, you must write "orange-and-white".
-- People: name clothing colors precisely (e.g. "cream jacket over coral-orange top", not just "beige jacket over orange top").
-- Vehicles: name distinctive vehicle colors when visible (e.g. "a blue bus", "red car").
-- Include small distinguishing features when clear: pink nose, dark eyes, high bun hairstyle, glass partitions, etc.
-
-Action rules (important):
-- Describe only body motion and position that is clearly visible across the frames.
-- If the subject is typing on a keyboard throughout, say they type continuously — do not invent a separate "looks up", "glances away", or "turns her head" beat unless the head clearly turns away from the screen across multiple frames.
-- For movement clips: state the start position/action and the end position/action (e.g. "starts sitting still, then walks toward the camera with tail raised").
-
-General rules:
+Rules:
 - Describe only what is clearly visible. Do not guess or invent details.
-- Do not infer emotions, intentions, or reactions (e.g. "surprised", "confused", "alarmed", "curious").
-- Include concrete visual hooks a caption writer could reuse: specific colors, multi-color markings, named objects, and motion beats.
-- Do not use humor, sarcasm, opinions, or stylistic language.
-- Write in English. No emojis.
-- Use exactly 3–5 complete sentences. Do not write more than 5.
-- End with a complete sentence. Do not trail off.
+- Animals with multiple coat colors must list ALL colors in subjects[].colors (e.g. orange-and-white, not just orange).
+- People: include precise clothing colors in subjects[].colors when visible.
+- actions_early and actions_late must describe visible motion only — no inferred emotions or reactions.
+- If the subject keeps typing throughout, say they type continuously; do not invent a glance away unless clearly visible.
+- subjects must contain at least one entry with a non-empty name.
+- setting, actions_early, and actions_late must be non-empty strings.
+- English only. No emojis.

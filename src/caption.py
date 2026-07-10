@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from src.env import get_float_env, get_int_env
+from src.describe_schema import parse_describe_json
 from src.results import (
     CAPTION_FAILURE_PREFIX,
     DESCRIBE_FAILURE_PREFIX,
@@ -91,6 +92,26 @@ _FRIENDLY_PROCESS_FAILURE: dict[str, str] = {
 
 def _friendly_message(messages: dict[str, str], style: str) -> str:
     return messages.get(style) or messages["formal"]
+
+
+def structured_describe_enabled() -> bool:
+    return os.environ.get("STRUCTURED_DESCRIBE", "1") == "1"
+
+
+def _describe_prompt_name() -> str:
+    return "describe" if structured_describe_enabled() else "describe_prose"
+
+
+_STYLE_STRUCTURED_HINT = (
+    "Use at least one color or marking from subjects and at least one action "
+    "from actions_early or actions_late. Do not invent details not present below."
+)
+
+
+def _build_style_user_prompt(description: str) -> str:
+    if structured_describe_enabled():
+        return f"{_STYLE_STRUCTURED_HINT}\n\nVideo description (structured):\n{description}"
+    return f"Video description:\n{description}"
 
 
 def _friendly_failures_enabled() -> bool:
@@ -182,7 +203,8 @@ def _output_contract() -> str:
 
 @functools.lru_cache(maxsize=16)
 def load_prompt(style: str) -> str:
-    body = _read_prompt_file(style)
+    prompt_name = _describe_prompt_name() if style == "describe" else style
+    body = _read_prompt_file(prompt_name)
     if style not in STYLES:
         return body
     role, _, rest = body.partition("\n\n")
@@ -252,20 +274,24 @@ def vision_describe_call(
     frames_jpeg: Iterable[bytes],
     max_tokens: int,
     temperature: float,
+    json_mode: bool = False,
 ) -> tuple[str, str | None]:
     system_prompt = load_prompt("describe")
     content: list[dict] = [
         {"type": "image_url", "image_url": {"url": _to_data_url(b)}} for b in frames_jpeg
     ]
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
+    request_kwargs: dict = {
+        "model": model,
+        "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": content},
         ],
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if json_mode:
+        request_kwargs["response_format"] = {"type": "json_object"}
+    resp = client.chat.completions.create(**request_kwargs)
     choice = resp.choices[0]
     text = _strip_wrapping_quotes((choice.message.content or "").strip())
     return text, choice.finish_reason
@@ -310,7 +336,7 @@ def generate_styled_caption_from_text(
         base_sleep_s=1.0,
         jitter_s=get_float_env("RETRY_JITTER_S", 0.5),
     )
-    user_prompt = f"Video description:\n{description}"
+    user_prompt = _build_style_user_prompt(description)
     last_reason = "EmptyResponse"
 
     def attempt_fn(attempt: int) -> _StyleAttempt:
