@@ -107,11 +107,21 @@ _STYLE_STRUCTURED_HINT = (
     "from actions_early or actions_late. Do not invent details not present below."
 )
 
+_META_LEAK_RETRY_NUDGE = (
+    "Your last reply restated instructions or rules. "
+    "Output ONLY the final caption — two sentences, no preamble, "
+    "no mention of rules, the user, or your task."
+)
 
-def _build_style_user_prompt(description: str) -> str:
+
+def _build_style_user_prompt(description: str, *, meta_leak_retry: bool = False) -> str:
     if structured_describe_enabled():
-        return f"{_STYLE_STRUCTURED_HINT}\n\nVideo description (structured):\n{description}"
-    return f"Video description:\n{description}"
+        prompt = f"{_STYLE_STRUCTURED_HINT}\n\nScene facts:\n{description}"
+    else:
+        prompt = f"Scene facts:\n{description}"
+    if meta_leak_retry:
+        prompt = f"{prompt}\n\n{_META_LEAK_RETRY_NUDGE}"
+    return prompt
 
 
 def _friendly_failures_enabled() -> bool:
@@ -325,18 +335,17 @@ def generate_styled_caption_from_text(
 ) -> CaptionResult:
     """Generate one styled caption from a factual description.
 
-    At most STYLE_MAX_ATTEMPTS API calls (default 2). On persistent failure,
+    At most STYLE_MAX_ATTEMPTS API calls (default 3). On persistent failure,
     returns a CaptionResult with a typed error.
     """
     system_prompt = load_prompt(style)
     base_max = max(get_int_env("STYLE_MAX_TOKENS", get_int_env("MAX_TOKENS", 140)), 32)
     base_temp = _STYLE_TEMPERATURE.get(style, get_float_env("TEMPERATURE", 0.75))
     policy = RetryPolicy(
-        max_attempts=max(get_int_env("STYLE_MAX_ATTEMPTS", 2), 1),
+        max_attempts=max(get_int_env("STYLE_MAX_ATTEMPTS", 3), 1),
         base_sleep_s=1.0,
         jitter_s=get_float_env("RETRY_JITTER_S", 0.5),
     )
-    user_prompt = _build_style_user_prompt(description)
     last_reason = "EmptyResponse"
 
     def attempt_fn(attempt: int) -> _StyleAttempt:
@@ -347,7 +356,15 @@ def generate_styled_caption_from_text(
             max_tokens = base_max + 220
         else:
             max_tokens = base_max + 60
-        temperature = min(max(base_temp - (attempt - 1) * 0.08, 0.2), 0.97)
+        meta_retry = attempt > 1 and last_reason == "MetaLeak"
+        if meta_retry:
+            temperature = min(base_temp - (attempt - 1) * 0.08, 0.25)
+        else:
+            temperature = min(max(base_temp - (attempt - 1) * 0.08, 0.2), 0.97)
+        user_prompt = _build_style_user_prompt(
+            description,
+            meta_leak_retry=meta_retry,
+        )
 
         resp = client.chat.completions.create(
             model=model,

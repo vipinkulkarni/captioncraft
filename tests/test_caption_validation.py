@@ -2,6 +2,7 @@
 
 from src.caption import (
     STYLES,
+    _build_style_user_prompt,
     _is_bad_output,
     _is_meta_leak,
     looks_truncated,
@@ -101,6 +102,24 @@ class TestTruncation:
 
     def test_valid_terminal(self):
         assert looks_truncated("This caption ends properly.", None) is False
+
+
+class TestBuildStyleUserPrompt:
+    def test_structured_uses_scene_facts_header(self, monkeypatch):
+        monkeypatch.setenv("STRUCTURED_DESCRIBE", "1")
+        prompt = _build_style_user_prompt("Setting: beach")
+        assert "Scene facts:" in prompt
+        assert "Video description" not in prompt
+
+    def test_prose_uses_scene_facts_header(self, monkeypatch):
+        monkeypatch.setenv("STRUCTURED_DESCRIBE", "0")
+        prompt = _build_style_user_prompt("A cat on a mat.")
+        assert prompt.startswith("Scene facts:\n")
+
+    def test_meta_leak_retry_appends_nudge(self, monkeypatch):
+        monkeypatch.setenv("STRUCTURED_DESCRIBE", "1")
+        prompt = _build_style_user_prompt("Setting: beach", meta_leak_retry=True)
+        assert "Your last reply restated instructions" in prompt
 
 
 class TestLoadPrompt:
