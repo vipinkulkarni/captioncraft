@@ -1,0 +1,2 @@
+-r requirements-agent.txt
+pytest>=8,<9
