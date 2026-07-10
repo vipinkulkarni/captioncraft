@@ -126,10 +126,27 @@ _META_LEAK_MARKERS = (
 )
 
 
+_PROMPTS_DIR = _REPO_ROOT / "prompts"
+_OUTPUT_CONTRACT_PATH = _PROMPTS_DIR / "_output_contract.txt"
+
+
+@functools.lru_cache(maxsize=16)
+def _read_prompt_file(name: str) -> str:
+    return (_PROMPTS_DIR / f"{name}.txt").read_text(encoding="utf-8")
+
+
+@functools.lru_cache(maxsize=1)
+def _output_contract() -> str:
+    return _OUTPUT_CONTRACT_PATH.read_text(encoding="utf-8").strip()
+
+
 @functools.lru_cache(maxsize=16)
 def load_prompt(style: str) -> str:
-    path = Path(__file__).resolve().parent.parent / "prompts" / f"{style}.txt"
-    return path.read_text(encoding="utf-8")
+    body = _read_prompt_file(style)
+    if style not in STYLES:
+        return body
+    role, _, rest = body.partition("\n\n")
+    return f"{role}\n\n{_output_contract()}\n\n{rest}"
 
 
 def _to_data_url(jpeg_bytes: bytes) -> str:
