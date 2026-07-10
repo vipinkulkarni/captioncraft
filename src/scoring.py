@@ -13,7 +13,7 @@ _TECH_JOKE_PATTERN = (
     r"refactor|syntax error|load balancing|try[- ]catch|pr\b|unhandled|"
     r"single[- ]threaded|multi[- ]threaded|cache[d]?|regression|qa|commit(?:s|ted)?|"
     r"database|flush(?:ing|ed)?|thread(?:s|ed|ing)?|bottleneck|payload|latency|"
-    r"benchmark|pipeline|container|microservice|patch(?:es|ed)?|lint(?:er|ing)?|"
+    r"benchmark|pipeline|container|microservice|lint(?:er|ing)?|"
     r"deadlock|throughput|downtime|dev(?:ops)?|standup|retry(?:ing|ed)?|"
     r"for loop|non[- ]blocking|idle\b|loading|render(?:ing)?|loop\b|"
     r"oauth|kubernetes|k8s|npm|docker|vm\b|ssh|terraform|serverless|"

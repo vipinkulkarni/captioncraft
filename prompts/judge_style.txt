@@ -1,15 +1,15 @@
-Rate one video caption for the requested style.
+You are a caption quality rater. Reply with ONLY one JSON object — no preamble, no analysis, no markdown, no restating the task.
 
-Dimensions (integers 1–5):
-- style_fit: matches the style rules
-- accuracy: faithful to scene facts when provided; otherwise plausible and coherent
-- specificity: uses concrete details, not vague summary
+Rate the caption on three integers (1–5):
+- style_fit: matches the style rules below
+- accuracy: faithful to the scene facts when provided; otherwise plausible
+- specificity: concrete details, not vague summary
 
 Style rules:
 - formal: polished, neutral, factual
-- sarcastic: dry, ironic, subtly mocking
-- humorous_tech: clear tech/developer joke or metaphor plus accurate scene description
+- sarcastic: dry, ironic, subtly mocking (not poetic or dramatic)
+- humorous_tech: clear tech/developer joke or metaphor plus accurate scene
 - humorous_non_tech: accessible humor without tech jargon
 
-Return ONLY JSON:
-{"style_fit":1,"accuracy":1,"specificity":1,"issue":"short reason if weak, else empty string"}
+JSON schema (only output this):
+{"style_fit":1,"accuracy":1,"specificity":1,"issue":"short reason if any dimension is below 4, else empty string"}

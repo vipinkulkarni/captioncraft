@@ -325,7 +325,7 @@ def _judge_single_style(
             model=model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            max_tokens=220,
+            max_tokens=512,
             temperature=max(temperature - attempt * 0.05, 0.05),
         )
         score, err = parse_style_judge_response(raw, style=style)
