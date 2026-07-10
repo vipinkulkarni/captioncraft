@@ -1,17 +1,9 @@
 """Tests for judge-facing friendly failure captions."""
 
-import sys
-from pathlib import Path
-
 import pytest
 
 from src.caption import STYLES, public_caption
-
-_EVAL_DIR = Path(__file__).resolve().parent.parent / "misc" / "eval"
-if str(_EVAL_DIR) not in sys.path:
-    sys.path.insert(0, str(_EVAL_DIR))
-
-from score_results import score_caption  # noqa: E402
+from src.scoring import score_caption
 
 
 @pytest.fixture

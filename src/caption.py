@@ -9,6 +9,17 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from src.env import get_float_env, get_int_env
+from src.results import (
+    CAPTION_FAILURE_PREFIX,
+    DESCRIBE_FAILURE_PREFIX,
+    PROCESS_FAILURE_PREFIX,
+    CaptionError,
+    CaptionResult,
+    DescribeResult,
+    ProcessError,
+    caption_error_from_reason,
+    process_failure_string,
+)
 from src.retry import RetryPolicy, call_with_retry
 
 # Load repo-root .env reliably (Streamlit/other runners may change CWD).
@@ -34,9 +45,9 @@ _STYLE_WORD_HARD_LIMIT: dict[str, int] = {
 }
 _DEFAULT_WORD_HARD_LIMIT = 72
 
-_DESCRIBE_FAILURE_PREFIX = "Failed to describe video:"
-_CAPTION_FAILURE_PREFIX = "Failed to caption:"
-_PROCESS_FAILURE_PREFIX = "Failed to process video:"
+_DESCRIBE_FAILURE_PREFIX = DESCRIBE_FAILURE_PREFIX
+_CAPTION_FAILURE_PREFIX = CAPTION_FAILURE_PREFIX
+_PROCESS_FAILURE_PREFIX = PROCESS_FAILURE_PREFIX
 
 _FRIENDLY_DESCRIBE_FAILURE: dict[str, str] = {
     "formal": (
@@ -87,18 +98,46 @@ def _friendly_failures_enabled() -> bool:
 
 
 def is_describe_failure(text: str) -> bool:
-    return text.startswith(_DESCRIBE_FAILURE_PREFIX)
+    return text.startswith(DESCRIBE_FAILURE_PREFIX)
+
+
+def public_describe_result(result: DescribeResult, *, style: str = "formal") -> str:
+    if result.ok:
+        return result.text or ""
+    if not _friendly_failures_enabled():
+        return result.to_failure_string()
+    return _friendly_message(_FRIENDLY_DESCRIBE_FAILURE, style)
+
+
+def public_caption_result(result: CaptionResult, *, style: str = "formal") -> str:
+    if result.ok:
+        return result.text or ""
+    if not _friendly_failures_enabled():
+        return result.to_failure_string()
+    return _friendly_message(_FRIENDLY_CAPTION_FAILURE, style)
+
+
+def public_process_failure(
+    error: ProcessError,
+    *,
+    style: str = "formal",
+    detail: str = "",
+) -> str:
+    raw = process_failure_string(error, detail=detail)
+    if not _friendly_failures_enabled():
+        return raw
+    return _friendly_message(_FRIENDLY_PROCESS_FAILURE, style)
 
 
 def public_caption(text: str, *, style: str = "formal") -> str:
     """Map internal failure strings to judge-facing captions when enabled."""
     if not _friendly_failures_enabled():
         return text
-    if text.startswith(_DESCRIBE_FAILURE_PREFIX):
+    if text.startswith(DESCRIBE_FAILURE_PREFIX):
         return _friendly_message(_FRIENDLY_DESCRIBE_FAILURE, style)
-    if text.startswith(_CAPTION_FAILURE_PREFIX):
+    if text.startswith(CAPTION_FAILURE_PREFIX):
         return _friendly_message(_FRIENDLY_CAPTION_FAILURE, style)
-    if text.startswith(_PROCESS_FAILURE_PREFIX):
+    if text.startswith(PROCESS_FAILURE_PREFIX):
         return _friendly_message(_FRIENDLY_PROCESS_FAILURE, style)
     if text == "Invalid task input." or text == "Unsupported style requested.":
         return _friendly_message(_FRIENDLY_PROCESS_FAILURE, style)
@@ -257,11 +296,11 @@ def generate_styled_caption_from_text(
     model: str,
     style: str,
     description: str,
-) -> str:
+) -> CaptionResult:
     """Generate one styled caption from a factual description.
 
     At most STYLE_MAX_ATTEMPTS API calls (default 2). On persistent failure,
-    returns a clearly marked "Failed to caption: <reason>" string.
+    returns a CaptionResult with a typed error.
     """
     system_prompt = load_prompt(style)
     base_max = max(get_int_env("STYLE_MAX_TOKENS", get_int_env("MAX_TOKENS", 140)), 32)
@@ -328,21 +367,37 @@ def generate_styled_caption_from_text(
         classify=classify,
         should_sleep=should_sleep,
     )
+    attempts = len(reasons) + 1 if not reasons else len(reasons)
 
     if not reasons:
         out = last.out
         if last.truncated and out.strip() and out[-1] not in _VALID_END_CHARS:
             out = out.strip() + "."
-        return out
+        return CaptionResult(text=out, error=None, attempts=attempts)
 
     if last.truncated and last.out.strip() and not last.is_bad:
         out = last.out.strip()
         if out[-1] not in _VALID_END_CHARS:
             out = out + "."
-        return out
+        return CaptionResult(text=out, error=None, attempts=attempts)
+
     if last.is_bad:
-        return f"{_CAPTION_FAILURE_PREFIX} {last.bad_reason or reasons[-1]}"
-    return last.out or f"{_CAPTION_FAILURE_PREFIX} EmptyResponse"
+        reason = last.bad_reason or reasons[-1]
+        return CaptionResult(
+            text=None,
+            error=caption_error_from_reason(reason),
+            error_detail=reason,
+            attempts=attempts,
+        )
+
+    if last.out:
+        return CaptionResult(text=last.out, error=None, attempts=attempts)
+    return CaptionResult(
+        text=None,
+        error=CaptionError.EMPTY,
+        error_detail="EmptyResponse",
+        attempts=attempts,
+    )
 
 
 def dry_run_captions(task_id: str, styles: list[str]) -> dict[str, str]:

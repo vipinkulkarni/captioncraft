@@ -16,12 +16,14 @@ from src.caption import (
     STYLES,
     dry_run_captions,
     generate_styled_caption_from_text,
-    is_describe_failure,
+    public_caption_result,
+    public_describe_result,
+    public_process_failure,
     looks_truncated,
-    public_caption,
     vision_describe_call,
 )
 from src.env import get_float_env, get_frame_config, get_int_env, resolve_frame_count
+from src.results import DescribeResult, ProcessError, describe_error_from_reason
 from src.retry import RetryPolicy, call_with_retry
 
 
@@ -175,7 +177,7 @@ def _describe_frames(
     model: str,
     task_id: str,
     frames: list[bytes],
-) -> str:
+) -> DescribeResult:
     base_max = max(get_int_env("DESCRIBE_MAX_TOKENS", 1200), 64)
     temperature = get_float_env("DESCRIBE_TEMPERATURE", 0.2)
     policy = RetryPolicy(
@@ -183,9 +185,10 @@ def _describe_frames(
         base_sleep_s=get_float_env("DESCRIBE_RETRY_SLEEP_S", 1.5),
         jitter_s=get_float_env("RETRY_JITTER_S", 0.5),
     )
+    t0 = time.perf_counter()
 
     def attempt_fn(attempt: int) -> _DescribeAttempt:
-        t0 = time.perf_counter()
+        t_attempt = time.perf_counter()
         try:
             max_tokens = base_max + (300 if attempt > 1 else 0)
             text, finish_reason = vision_describe_call(
@@ -198,13 +201,13 @@ def _describe_frames(
             return _DescribeAttempt(
                 text=text,
                 finish_reason=finish_reason,
-                elapsed_s=time.perf_counter() - t0,
+                elapsed_s=time.perf_counter() - t_attempt,
             )
         except Exception as e:
             return _DescribeAttempt(
                 text="",
                 finish_reason=None,
-                elapsed_s=time.perf_counter() - t0,
+                elapsed_s=time.perf_counter() - t_attempt,
                 error=type(e).__name__,
             )
 
@@ -233,48 +236,71 @@ def _describe_frames(
         classify=classify,
         on_failure=on_failure,
     )
+    total_ms = (time.perf_counter() - t0) * 1000.0
+    attempts = len(reasons) + 1 if not reasons else len(reasons)
 
     if not reasons:
-        return last.text
+        return DescribeResult(
+            text=last.text,
+            error=None,
+            attempts=attempts,
+            total_ms=total_ms,
+        )
 
     last_reason = reasons[-1]
     if last.text and last_reason == "Truncated":
-        return last.text
+        return DescribeResult(
+            text=last.text,
+            error=None,
+            attempts=attempts,
+            total_ms=total_ms,
+        )
 
-    return f"Failed to describe video: {last_reason or 'EmptyResponse'}"
+    return DescribeResult(
+        text=None,
+        error=describe_error_from_reason(last_reason),
+        error_detail=last_reason,
+        attempts=attempts,
+        total_ms=total_ms,
+    )
 
 
 def _caption_styles_from_description(
     *,
     client: OpenAI,
     model: str,
-    description: str,
+    describe: DescribeResult,
     requested_styles: list[str],
     parallel: bool,
 ) -> dict[str, str]:
     captions: dict[str, str] = {}
 
-    if is_describe_failure(description):
+    if not describe.ok:
         return {
-            style: public_caption(description, style=style) for style in requested_styles
+            style: public_describe_result(describe, style=style) for style in requested_styles
         }
 
     def _one(style: str) -> tuple[str, str]:
         if style not in STYLES:
-            return style, public_caption("Unsupported style requested.", style=style)
+            return style, public_process_failure(
+                ProcessError.UNSUPPORTED_STYLE,
+                style=style,
+            )
         try:
-            caption = generate_styled_caption_from_text(
+            caption_result = generate_styled_caption_from_text(
                 client=client,
                 model=model,
                 style=style,
-                description=description,
+                description=describe.text or "",
             )
-            if not caption.strip():
-                caption = "Failed to caption: EmptyResponse"
-            return style, public_caption(caption, style=style)
+            return style, public_caption_result(caption_result, style=style)
         except Exception as e:
             print(f"  caption {style} failed: {type(e).__name__}", file=sys.stderr)
-            return style, public_caption(f"Failed to caption: {type(e).__name__}", style=style)
+            return style, public_process_failure(
+                ProcessError.PROCESSING,
+                style=style,
+                detail=type(e).__name__,
+            )
 
     if parallel and len(requested_styles) > 1:
         with ThreadPoolExecutor(max_workers=min(len(requested_styles), 4)) as pool:
@@ -464,7 +490,7 @@ def _process_task(
         if not requested_styles:
             requested_styles = ["formal"]
         captions = {
-            style: public_caption("Invalid task input.", style=style)
+            style: public_process_failure(ProcessError.INVALID_TASK, style=style)
             for style in requested_styles
         }
         return {"task_id": task_id or "unknown", "captions": captions}
@@ -481,7 +507,7 @@ def _process_task(
         cached_description = ctx.descriptions_cache.get(task_id, "")
         if cached_description:
             print(f"  {task_id}: using cached description", file=sys.stderr)
-            description = cached_description
+            describe = DescribeResult(text=cached_description, error=None)
             download_s = 0.0
             describe_s = 0.0
             next_url = _next_prefetch_url(
@@ -518,7 +544,7 @@ def _process_task(
 
             t0 = time.perf_counter()
             print(f"  {task_id}: describing...", file=sys.stderr)
-            description = _describe_frames(
+            describe = _describe_frames(
                 client=ctx.client,
                 model=ctx.vision_model,
                 task_id=task_id,
@@ -531,7 +557,7 @@ def _process_task(
         captions = _caption_styles_from_description(
             client=ctx.client,
             model=ctx.caption_model,
-            description=description,
+            describe=describe,
             requested_styles=requested_styles,
             parallel=ctx.parallel_styles,
         )
@@ -542,9 +568,15 @@ def _process_task(
             file=sys.stderr,
         )
     except Exception as e:
-        err = f"Failed to process video: {type(e).__name__}"
-        print(f"  {task_id}: {err}", file=sys.stderr)
-        captions = {style: public_caption(err, style=style) for style in requested_styles}
+        print(f"  {task_id}: Failed to process video: {type(e).__name__}", file=sys.stderr)
+        captions = {
+            style: public_process_failure(
+                ProcessError.PROCESSING,
+                style=style,
+                detail=type(e).__name__,
+            )
+            for style in requested_styles
+        }
 
     return {"task_id": task_id, "captions": captions}
 
