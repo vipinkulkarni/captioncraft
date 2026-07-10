@@ -15,11 +15,14 @@ from openai import OpenAI
 from src.caption import STYLES, get_fireworks_client
 from src.env import get_int_env
 from src.pipeline import load_descriptions_cache
-from src.scoring import score_caption
+from src.scoring import is_structural_failure
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _JUDGE_STYLE_PROMPT_PATH = _REPO_ROOT / "prompts" / "judge_style.txt"
 _JUDGE_DISTINCTNESS_PROMPT_PATH = _REPO_ROOT / "prompts" / "judge_distinctness.txt"
+_DEFAULT_DESCRIPTIONS_PATH = (
+    _REPO_ROOT / "misc" / "eval" / "eval_fixtures" / "descriptions_eval16.json"
+)
 
 DIMENSIONS = ("style_fit", "accuracy", "specificity")
 _SCORE_FIELD_RE = re.compile(
@@ -140,12 +143,23 @@ def _extract_json_object(raw: str) -> str:
     return text
 
 
+def default_descriptions_path() -> Path | None:
+    return _DEFAULT_DESCRIPTIONS_PATH if _DEFAULT_DESCRIPTIONS_PATH.is_file() else None
+
+
+def resolve_descriptions_path(path: Path | None) -> Path | None:
+    if path is not None:
+        return path
+    return default_descriptions_path()
+
+
 def load_descriptions(path: Path | None) -> dict[str, str]:
-    if path is None:
+    resolved = resolve_descriptions_path(path)
+    if resolved is None:
         return {}
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(resolved.read_text(encoding="utf-8"))
     if isinstance(data, dict) and "descriptions" in data:
-        return load_descriptions_cache(path)
+        return load_descriptions_cache(resolved)
     if isinstance(data, dict):
         return {str(k): str(v) for k, v in data.items() if v}
     raise ValueError("descriptions file must be a task_id -> text map or cache with descriptions key")
@@ -160,8 +174,8 @@ def _clamp_score(value: Any) -> int:
 
 
 def _auto_skip_caption(text: str, style: str) -> CaptionJudgeScore | None:
-    ok, reason = score_caption(text, style)
-    if ok:
+    is_fail, reason = is_structural_failure(text)
+    if not is_fail:
         return None
     return CaptionJudgeScore(
         style=style,
@@ -469,7 +483,8 @@ def judge_results_data(
 
 def judge_file(path: Path, *, descriptions_path: Path | None = None) -> JudgeFileResult:
     data = json.loads(path.read_text(encoding="utf-8"))
-    descriptions = load_descriptions(descriptions_path) if descriptions_path else {}
+    resolved = resolve_descriptions_path(descriptions_path)
+    descriptions = load_descriptions(resolved) if resolved else {}
     return judge_results_data(data, descriptions=descriptions)
 
 
@@ -497,7 +512,8 @@ def judge_result_to_dict(result: JudgeFileResult) -> dict[str, Any]:
 
 def format_judge_summary(result: JudgeFileResult) -> str:
     lines = [
-        f"judge: {result.passes}/{result.total} (min={result.min_score}, model={result.model})",
+        f"{result.passes}/{result.total}",
+        f"  (judge min={result.min_score}, model={result.model})",
     ]
     if not result.descriptions_provided:
         lines.append("  (no scene facts — accuracy is plausibility-only)")

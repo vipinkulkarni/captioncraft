@@ -1,6 +1,6 @@
 """Tests for regex caption scoring."""
 
-from src.scoring import score_caption
+from src.scoring import is_structural_failure, score_caption
 
 
 class TestTechJargonFalsePositives:
@@ -19,3 +19,12 @@ class TestTechJargonFalsePositives:
         )
         ok, reason = score_caption(text, "humorous_non_tech")
         assert ok, reason
+
+
+class TestStructuralFailure:
+    def test_failed_caption_is_structural(self):
+        assert is_structural_failure("Failed to caption: MetaLeak") == (True, "error")
+
+    def test_calm_patch_is_not_structural(self):
+        text = "They found a calm patch of water and stayed there all afternoon."
+        assert is_structural_failure(text) == (False, "")

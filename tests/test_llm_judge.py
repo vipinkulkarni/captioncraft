@@ -148,6 +148,6 @@ class TestJudgePassLogic:
         assert any("humorous_tech" in f for f in result.failures())
         assert result.low_distinctness()
         text = format_judge_summary(result)
-        assert "judge: 1/2" in text
+        assert "judge: 1/2" in text or "1/2" in text
         exported = judge_result_to_dict(result)
         assert exported["passes"] == 1

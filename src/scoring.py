@@ -79,6 +79,17 @@ def cross_style_similarity_warnings(captions: dict[str, str], task_id: str) -> l
     return warnings
 
 
+def is_structural_failure(text: str) -> tuple[bool, str]:
+    """Hard failures only — for skipping judge API calls, not quality scoring."""
+    if not text or not text.strip():
+        return True, "empty"
+    if text.lower().startswith("failed to"):
+        return True, "error"
+    if text.lower().startswith("video caption ("):
+        return True, "placeholder"
+    return False, ""
+
+
 def score_caption(text: str, style: str) -> tuple[bool, str]:
     if not text or not text.strip():
         return False, "empty"
