@@ -24,7 +24,7 @@ def _resolve_caption_model() -> str:
 
 
 def main() -> None:
-    load_dotenv(override=True)
+    load_dotenv(override=False)
 
     tasks_path = Path(os.environ.get("INPUT_TASKS", "/input/tasks.json"))
     results_path = Path(os.environ.get("OUTPUT_RESULTS", "/output/results.json"))

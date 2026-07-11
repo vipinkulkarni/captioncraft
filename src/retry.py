@@ -31,6 +31,7 @@ def call_with_retry(
     attempt: Callable[[int], T],
     classify: Callable[[int, T], str | None],
     should_sleep: Callable[[int, str], bool] | None = None,
+    should_retry: Callable[[int, str], bool] | None = None,
     on_failure: Callable[[int, str, T], None] | None = None,
 ) -> tuple[T, list[str]]:
     """Run up to max_attempts. classify returns None on success, else a failure reason."""
@@ -50,6 +51,8 @@ def call_with_retry(
         reasons.append(reason)
         if on_failure is not None:
             on_failure(attempt_idx, reason, last)
+        if should_retry is not None and not should_retry(attempt_idx, reason):
+            break
         if attempt_idx < policy.max_attempts:
             policy.sleep_before_retry(enabled=sleep_gate(attempt_idx, reason))
 

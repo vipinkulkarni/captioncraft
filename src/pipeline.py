@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -32,6 +32,11 @@ from src.env import get_float_env, get_frame_config, get_int_env, resolve_frame_
 from src.results import DescribeResult, ProcessError, describe_error_from_reason
 from src.retry import RetryPolicy, call_with_retry
 from src.run_log import emit_config_event, emit_event, log_human
+
+
+def _store_live_description(store: dict[str, str], task_id: str, describe: DescribeResult) -> None:
+    if describe.ok and describe.text:
+        store[task_id] = describe.text.strip()
 
 
 def read_tasks(path: Path) -> list[dict]:
@@ -202,6 +207,22 @@ def _finalize_describe_text(raw_text: str) -> tuple[str | None, str | None, str 
     return raw_text, None, None
 
 
+def _vision_fallback_model() -> str:
+    return os.environ.get("VISION_FALLBACK_MODEL", "").strip()
+
+
+def _describe_max_attempts() -> int:
+    base = max(get_int_env("DESCRIBE_MAX_ATTEMPTS", 2), 1)
+    if not _vision_fallback_model():
+        return base
+    with_fallback = get_int_env("DESCRIBE_MAX_ATTEMPTS_WITH_FALLBACK", 1)
+    return max(min(with_fallback, base), 1)
+
+
+def _describe_no_retry_reasons() -> frozenset[str]:
+    return frozenset({"ReadTimeout", "APITimeoutError", "Timeout"})
+
+
 def _describe_frames(
     *,
     client: OpenAI | None,
@@ -212,7 +233,7 @@ def _describe_frames(
     base_max = max(get_int_env("DESCRIBE_MAX_TOKENS", 1200), 64)
     temperature = get_float_env("DESCRIBE_TEMPERATURE", 0.2)
     policy = RetryPolicy(
-        max_attempts=max(get_int_env("DESCRIBE_MAX_ATTEMPTS", 2), 1),
+        max_attempts=_describe_max_attempts(),
         base_sleep_s=get_float_env("DESCRIBE_RETRY_SLEEP_S", 1.5),
         jitter_s=get_float_env("RETRY_JITTER_S", 0.5),
     )
@@ -261,11 +282,19 @@ def _describe_frames(
             f"{reason} in {result.elapsed_s:.1f}s",
         )
 
+    def should_sleep(_attempt: int, reason: str) -> bool:
+        return reason not in _describe_no_retry_reasons()
+
+    def should_retry(_attempt: int, reason: str) -> bool:
+        return reason not in _describe_no_retry_reasons()
+
     last, reasons = call_with_retry(
         policy=policy,
         attempt=attempt_fn,
         classify=classify,
         on_failure=on_failure,
+        should_sleep=should_sleep,
+        should_retry=should_retry,
     )
     total_ms = (time.perf_counter() - t0) * 1000.0
     attempts = len(reasons) + 1 if not reasons else len(reasons)
@@ -299,10 +328,6 @@ def _describe_frames(
         attempts=attempts,
         total_ms=total_ms,
     )
-
-
-def _vision_fallback_model() -> str:
-    return os.environ.get("VISION_FALLBACK_MODEL", "").strip()
 
 
 def _describe_with_fallback(
@@ -632,6 +657,8 @@ class _RunContext:
     run_start: float = 0.0
     time_budget_s: float = 0.0
     deadline_reserve_s: float = 30.0
+    descriptions_live: dict[str, str] = field(default_factory=dict)
+    judge_retry: object | None = None
 
     def should_skip_primary_describe(self, *, remaining_clips: int) -> bool:
         """True when the remaining budget only covers fast fallback describes.
@@ -693,7 +720,8 @@ def _log_config(ctx: _RunContext) -> None:
         f"frame_count_max={os.environ.get('FRAME_COUNT_MAX', '24')} "
         f"api_timeout_s={os.environ.get('API_TIMEOUT_S', '45')} "
         f"vision_fallback={_vision_fallback_model() or 'none'} "
-        f"time_budget_s={ctx.time_budget_s or 'off'}",
+        f"time_budget_s={ctx.time_budget_s or 'off'} "
+        f"judge_retry={'on' if get_int_env('JUDGE_RETRY', 0) else 'off'}",
     )
     emit_config_event(
         vision=ctx.vision_model,
@@ -751,9 +779,18 @@ def _normalize_requested_styles(styles: object) -> list[str]:
     return list(dict.fromkeys(s for s in styles if isinstance(s, str)))
 
 
-def _append_and_persist(results: list[dict], result: dict, results_path: Path) -> None:
+def _append_and_persist(
+    results: list[dict],
+    result: dict,
+    results_path: Path,
+    *,
+    ctx: _RunContext | None = None,
+    clip_index: int | None = None,
+) -> None:
     results.append(result)
     write_results(results_path, results)
+    if ctx is not None and ctx.judge_retry is not None and clip_index is not None:
+        ctx.judge_retry.submit(result, clip_index=clip_index)
 
 
 def _finish_task_caption(
@@ -773,6 +810,7 @@ def _finish_task_caption(
     download_s = prepared.download_s
     caption_s = 0.0
     style_attempts: dict[str, int] = {}
+    _store_live_description(ctx.descriptions_live, task_id, describe)
     try:
         t1 = time.perf_counter()
         log_human(f"  {task_id}: captioning styles...")
@@ -981,6 +1019,7 @@ def _process_task(
             )
             describe_s = time.perf_counter() - t0
 
+        _store_live_description(ctx.descriptions_live, task_id, describe)
         t1 = time.perf_counter()
         log_human(f"  {task_id}: captioning styles...")
         captions, style_attempts = _caption_styles_from_description(
@@ -1076,7 +1115,9 @@ def _run_tasks_with_overlap(
                     ctx=ctx,
                     prefetch=prefetch,
                 )
-                _append_and_persist(results, result, results_path)
+                _append_and_persist(
+                    results, result, results_path, ctx=ctx, clip_index=task_index
+                )
                 continue
 
             prepared: _PreparedClip | None = None
@@ -1128,7 +1169,9 @@ def _run_tasks_with_overlap(
                 ctx=ctx,
                 caption_client=caption_client,
             )
-            _append_and_persist(results, result, results_path)
+            _append_and_persist(
+                results, result, results_path, ctx=ctx, clip_index=task_index
+            )
     finally:
         describe_pool.shutdown(wait=True)
 
@@ -1159,8 +1202,20 @@ def run_full_tasks(
     if caption_client is None:
         raise RuntimeError("caption model requires a Fireworks or OpenRouter client")
 
+    from src.judge_retry import create_pipelined_judge_retry
+
     overlap = os.environ.get("OVERLAP_PIPELINE", "1") == "1"
     results: list[dict] = []
+    ctx.judge_retry = create_pipelined_judge_retry(
+        results=results,
+        results_path=results_path,
+        descriptions=ctx.descriptions_live,
+        caption_client=caption_client,
+        caption_model=ctx.caption_model or "",
+        run_start=ctx.run_start,
+        time_budget_s=ctx.time_budget_s,
+        total_clips=len(tasks),
+    )
     with _ClipPrefetch() as prefetch:
         try:
             if overlap and not ctx.descriptions_cache:
@@ -1182,7 +1237,15 @@ def run_full_tasks(
                         ctx=ctx,
                         prefetch=prefetch,
                     )
-                    _append_and_persist(results, result, results_path)
+                    _append_and_persist(
+                        results,
+                        result,
+                        results_path,
+                        ctx=ctx,
+                        clip_index=task_index,
+                    )
         finally:
             if results:
                 write_results(results_path, results)
+            if ctx.judge_retry is not None:
+                ctx.judge_retry.finish()

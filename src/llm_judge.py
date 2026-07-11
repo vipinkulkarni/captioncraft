@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -492,16 +493,17 @@ def judge_clip_call(
     captions: dict[str, str],
     description: str | None = None,
     temperature: float = 0.2,
+    skip_distinctness: bool = False,
+    parallel_styles: bool = False,
 ) -> ClipJudgeResult:
-    """Judge each style separately, then score cross-style distinctness."""
+    """Judge each style separately, optionally in parallel; distinctness optional."""
     result = ClipJudgeResult(task_id=task_id)
 
-    for style in STYLES:
+    def _judge_one(style: str) -> tuple[str, CaptionJudgeScore]:
         text = captions.get(style, "")
         skipped = _auto_skip_caption(text, style)
         if skipped is not None:
-            result.captions[style] = skipped
-            continue
+            return style, skipped
 
         score, err = _judge_single_style(
             client=client,
@@ -513,7 +515,7 @@ def judge_clip_call(
             temperature=temperature,
         )
         if score is None:
-            result.captions[style] = CaptionJudgeScore(
+            return style, CaptionJudgeScore(
                 style=style,
                 style_fit=0,
                 accuracy=0,
@@ -521,10 +523,23 @@ def judge_clip_call(
                 skipped=True,
                 skip_reason=err or "judge-parse-error",
             )
-        else:
-            result.captions[style] = score
+        return style, score
 
-    if any(not score.skipped for score in result.captions.values()):
+    if parallel_styles and len(STYLES) > 1:
+        with ThreadPoolExecutor(max_workers=min(len(STYLES), 4)) as pool:
+            futures = [pool.submit(_judge_one, style) for style in STYLES]
+            for fut in as_completed(futures):
+                style, score = fut.result()
+                result.captions[style] = score
+    else:
+        for style in STYLES:
+            s, score = _judge_one(style)
+            result.captions[s] = score
+
+    if (
+        not skip_distinctness
+        and any(not score.skipped for score in result.captions.values())
+    ):
         distinctness, note, err = _judge_distinctness(
             client=client,
             model=model,
@@ -574,6 +589,8 @@ def judge_results_data(
             task_id=task_id,
             captions={str(k): str(v) for k, v in captions.items()},
             description=descriptions.get(task_id) or None,
+            skip_distinctness=get_int_env("JUDGE_SKIP_DISTINCTNESS", 0) == 1,
+            parallel_styles=get_int_env("JUDGE_PARALLEL_STYLES", 0) == 1,
         )
         clips.append(clip)
         if on_progress:
@@ -582,7 +599,7 @@ def judge_results_data(
                 f"judge {_model_short_name(judge_model)} clip {index}/{total}: "
                 f"{task_id} -> {passing}/{clip.total_styles()} pass"
             )
-        sleep_s = get_int_env("JUDGE_SLEEP_MS", 400) / 1000.0
+        sleep_s = get_int_env("JUDGE_SLEEP_MS", 0) / 1000.0
         if sleep_s > 0:
             time.sleep(sleep_s)
 
