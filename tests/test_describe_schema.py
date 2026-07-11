@@ -29,9 +29,21 @@ class TestDescribeSchema:
         assert "Actions (early):" in formatted
         assert "Actions (late):" in formatted
 
-    def test_rejects_missing_subjects(self):
+    def test_salvages_empty_subjects_from_setting(self):
+        raw = """{
+          "subjects": [],
+          "setting": "outdoor park with a paved path and many green trees during daytime",
+          "actions_early": "the camera remains stationary overlooking a park path",
+          "actions_late": "the camera remains stationary overlooking a park path",
+          "background": "lush green grass and large trees"
+        }"""
+        ok, reason, formatted = parse_describe_json(raw)
+        assert ok, reason
+        assert "park scene" in formatted
+
+    def test_rejects_missing_required_fields(self):
         ok, reason, _formatted = parse_describe_json(
-            '{"setting":"x","actions_early":"a","actions_late":"b","subjects":[]}'
+            '{"setting":"","actions_early":"a","actions_late":"b","subjects":[]}'
         )
         assert not ok
         assert reason == "InvalidJSON"

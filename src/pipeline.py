@@ -20,10 +20,13 @@ from src.caption import (
     public_caption_result,
     public_describe_result,
     public_process_failure,
+    resolve_caption_model_pool,
+    resolve_llm_client,
     looks_truncated,
     structured_describe_enabled,
     vision_describe_call,
 )
+from src.caption_selector import generate_best_of_n_caption
 from src.describe_schema import parse_describe_json
 from src.env import get_float_env, get_frame_config, get_int_env, resolve_frame_count
 from src.results import DescribeResult, ProcessError, describe_error_from_reason
@@ -201,7 +204,7 @@ def _finalize_describe_text(raw_text: str) -> tuple[str | None, str | None, str 
 
 def _describe_frames(
     *,
-    client: OpenAI,
+    client: OpenAI | None,
     model: str,
     task_id: str,
     frames: list[bytes],
@@ -323,6 +326,15 @@ def _caption_styles_from_description(
                 0,
             )
         try:
+            pool = resolve_caption_model_pool()
+            if len(pool) > 1:
+                candidate = generate_best_of_n_caption(
+                    client=client,
+                    models=pool,
+                    style=style,
+                    description=describe.text or "",
+                )
+                return style, candidate.text, candidate.result.attempts
             caption_result = generate_styled_caption_from_text(
                 client=client,
                 model=model,
@@ -460,6 +472,7 @@ class _RunContext:
     parallel_styles: bool
     descriptions_cache: dict[str, str]
     client: OpenAI | None
+    caption_client: OpenAI | None
     vision_model: str | None
     caption_model: str | None
     descriptions_cache_label: str | None = None
@@ -468,6 +481,7 @@ class _RunContext:
 def _build_run_context(
     *,
     client: OpenAI | None,
+    caption_client: OpenAI | None = None,
     vision_model: str | None,
     caption_model: str | None,
 ) -> _RunContext:
@@ -489,6 +503,7 @@ def _build_run_context(
         parallel_styles=parallel_styles,
         descriptions_cache=descriptions_cache,
         client=client,
+        caption_client=caption_client,
         vision_model=vision_model,
         caption_model=caption_model,
         descriptions_cache_label=cache_label,
@@ -593,8 +608,16 @@ def _process_task(
         _emit_task_event(task_id=task_id, stage="dry_run")
         return {"task_id": task_id, "captions": dry_run_captions(task_id, requested_styles)}
 
-    if ctx.client is None or ctx.vision_model is None or ctx.caption_model is None:
-        raise RuntimeError("client/vision_model/caption_model required when DRY_RUN=0")
+    if ctx.vision_model is None or ctx.caption_model is None:
+        raise RuntimeError("vision_model/caption_model required when DRY_RUN=0")
+
+    vision_client = resolve_llm_client(ctx.vision_model, fallback=ctx.client)
+    caption_client = resolve_llm_client(
+        ctx.caption_model,
+        fallback=ctx.caption_client or ctx.client,
+    )
+    if caption_client is None:
+        raise RuntimeError("caption model requires a Fireworks or OpenRouter client")
 
     log_human(f"Processing {task_id} (describe + {len(requested_styles)} styles)...")
 
@@ -647,7 +670,7 @@ def _process_task(
             t0 = time.perf_counter()
             log_human(f"  {task_id}: describing...")
             describe = _describe_frames(
-                client=ctx.client,
+                client=vision_client,
                 model=ctx.vision_model,
                 task_id=task_id,
                 frames=frames,
@@ -657,7 +680,7 @@ def _process_task(
         t1 = time.perf_counter()
         log_human(f"  {task_id}: captioning styles...")
         captions, style_attempts = _caption_styles_from_description(
-            client=ctx.client,
+            client=caption_client,
             model=ctx.caption_model,
             describe=describe,
             requested_styles=requested_styles,
@@ -714,10 +737,12 @@ def run_full_tasks(
     client: OpenAI | None,
     vision_model: str | None,
     caption_model: str | None,
+    caption_client: OpenAI | None = None,
 ) -> None:
     tasks = read_tasks(tasks_path)
     ctx = _build_run_context(
         client=client,
+        caption_client=caption_client,
         vision_model=vision_model,
         caption_model=caption_model,
     )

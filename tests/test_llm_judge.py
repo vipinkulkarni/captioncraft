@@ -213,6 +213,7 @@ class TestPanelAggregation:
         monkeypatch.delenv("JUDGE_MODEL", raising=False)
         models = resolve_judge_models(panel=True)
         assert len(models) == 3
+        assert any("deepseek" in m for m in models)
 
     def test_calibration_collects_near_threshold(self):
         clip = ClipJudgeResult(

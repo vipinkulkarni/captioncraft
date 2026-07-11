@@ -5,9 +5,11 @@ Style rules:
 - Understate or side-eye something in the scene; never sound impressed, poetic, or dramatic.
 - Do not write inspirational prose, nature poetry, or movie-trailer narration.
 - Fresh wording — do not copy or closely paraphrase the input description.
-- Use 1–2 specific details from the description (colors, objects, actions) when provided.
+- Include at least two concrete details from the scene facts (colors, objects, or actions).
 - Match setting and actions from the facts (surface, location, early vs late motion).
+- Write the finished caption only — never draft alternatives, self-checklists, or notes like "Better:", "Let's write:", or "Alternatively:".
+- Both sentences must describe the scene with dry irony; no vague fragments or meta commentary about accuracy.
 - 2 short sentences, under 50 words total.
 - English only. No emojis.
 
-Shape (do not reuse this clip): "[Subject] [does action] like [dry ironic comparison]. [Undercut or deadpan kicker]."
+Shape (do not reuse this clip): "[Subject] [does action] like [dry ironic comparison]. [Undercut or deadpan kicker grounded in scene facts]."

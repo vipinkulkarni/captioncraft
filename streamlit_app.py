@@ -5,7 +5,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from src.caption import STYLES, get_fireworks_client
+from src.caption import STYLES, is_google_ai_model, is_openrouter_model, resolve_llm_client
 from src.pipeline import run_full_tasks
 
 
@@ -27,6 +27,8 @@ def _pretty_model(model: str) -> str:
     lower = m.lower()
     if "minimax-m3" in lower:
         return "MiniMax M3 (vision)"
+    if "gemma" in lower:
+        return "Gemma (vision)"
     if "deepseek-v4-flash" in lower:
         return "DeepSeek V4 Flash (text)"
     # Fall back to last path segment for readability.
@@ -66,7 +68,11 @@ with st.sidebar:
     st.text_input("Caption model", value=_pretty_model(_default_caption_model()), disabled=True)
 
     key_len = len(_env("FIREWORKS_API_KEY"))
+    or_key_len = len(_env("OPENROUTER_API_KEY"))
+    google_key_len = len(_env("GOOGLE_API_KEY")) or len(_env("GEMINI_API_KEY"))
     st.write(f"Fireworks API key: {'set' if key_len else 'missing'}")
+    st.write(f"OpenRouter API key: {'set' if or_key_len else 'missing'}")
+    st.write(f"Google AI API key: {'set' if google_key_len else 'missing'}")
     if 0 < key_len < 16:
         st.warning("Your API key looks like a placeholder (very short).")
     if not key_len:
@@ -90,8 +96,23 @@ if submitted:
     if not _default_caption_model():
         st.error("Missing `CAPTION_MODEL` (or `FIREWORKS_MODEL`).")
         st.stop()
-    if not _env("FIREWORKS_API_KEY"):
+    vision_model = _default_vision_model()
+    caption_model = _default_caption_model()
+    needs_fireworks = not is_openrouter_model(caption_model) and not is_google_ai_model(
+        caption_model
+    )
+    needs_openrouter = is_openrouter_model(vision_model) or is_openrouter_model(
+        caption_model
+    )
+    needs_google = is_google_ai_model(vision_model)
+    if needs_fireworks and not _env("FIREWORKS_API_KEY"):
         st.error("Missing `FIREWORKS_API_KEY`.")
+        st.stop()
+    if needs_openrouter and not _env("OPENROUTER_API_KEY"):
+        st.error("Missing `OPENROUTER_API_KEY` for OpenRouter vision model.")
+        st.stop()
+    if needs_google and not (_env("GOOGLE_API_KEY") or _env("GEMINI_API_KEY")):
+        st.error("Missing `GOOGLE_API_KEY` for Google AI Studio vision model.")
         st.stop()
 
     if not styles:
@@ -99,7 +120,11 @@ if submitted:
         st.stop()
 
     with st.spinner("Running describe + style captions..."):
-        client = get_fireworks_client()
+        vision_client = resolve_llm_client(vision_model)
+        caption_client = resolve_llm_client(caption_model)
+        if caption_client is None:
+            st.error("Caption model must use Fireworks or OpenRouter.")
+            st.stop()
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
             tasks_path = td_path / "tasks.json"
@@ -122,9 +147,10 @@ if submitted:
             run_full_tasks(
                 tasks_path=tasks_path,
                 results_path=results_path,
-                client=client,
-                vision_model=_default_vision_model(),
-                caption_model=_default_caption_model(),
+                client=vision_client or caption_client,
+                caption_client=caption_client,
+                vision_model=vision_model,
+                caption_model=caption_model,
             )
 
             raw = results_path.read_text(encoding="utf-8")

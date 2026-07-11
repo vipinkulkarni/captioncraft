@@ -8,9 +8,9 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from openai import OpenAI
+from openai import APIConnectionError, APITimeoutError, OpenAI
 
 from src.caption import STYLES, get_fireworks_client
 from src.env import get_int_env
@@ -25,8 +25,8 @@ _DEFAULT_DESCRIPTIONS_PATH = DESCRIPTIONS_FULL
 
 DEFAULT_JUDGE_PANEL_MODELS = (
     "accounts/fireworks/models/gpt-oss-120b",
-    "accounts/fireworks/models/kimi-k2-6",
-    "accounts/fireworks/models/glm-5-1",
+    "accounts/fireworks/models/glm-5p1",
+    "accounts/fireworks/models/deepseek-v4-flash",
 )
 
 DIMENSIONS = ("style_fit", "accuracy", "specificity")
@@ -403,7 +403,11 @@ def _chat_json(
             }
             if use_json_mode:
                 request_kwargs["response_format"] = {"type": "json_object"}
-            resp = client.chat.completions.create(**request_kwargs)
+            try:
+                resp = client.chat.completions.create(**request_kwargs)
+            except (APIConnectionError, APITimeoutError):
+                time.sleep(2.0 + attempt * 1.5)
+                continue
             last = (resp.choices[0].message.content or "").strip()
             if last:
                 return last
@@ -543,6 +547,7 @@ def judge_results_data(
     client: OpenAI | None = None,
     model: str | None = None,
     min_score: int | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> JudgeFileResult:
     descriptions = descriptions or {}
     judge_client = client or get_fireworks_client()
@@ -553,8 +558,13 @@ def judge_results_data(
     threshold = min_score if min_score is not None else get_int_env("JUDGE_MIN_SCORE", 3)
 
     clips: list[ClipJudgeResult] = []
-    for task in data:
+    total = len(data)
+    for index, task in enumerate(data, start=1):
         task_id = str(task["task_id"])
+        if on_progress:
+            on_progress(
+                f"judge {_model_short_name(judge_model)} clip {index}/{total}: {task_id}"
+            )
         captions = task.get("captions") or {}
         if not isinstance(captions, dict):
             captions = {}
@@ -566,16 +576,27 @@ def judge_results_data(
             description=descriptions.get(task_id) or None,
         )
         clips.append(clip)
+        if on_progress:
+            passing = clip.passing_styles(min_score=threshold)
+            on_progress(
+                f"judge {_model_short_name(judge_model)} clip {index}/{total}: "
+                f"{task_id} -> {passing}/{clip.total_styles()} pass"
+            )
         sleep_s = get_int_env("JUDGE_SLEEP_MS", 400) / 1000.0
         if sleep_s > 0:
             time.sleep(sleep_s)
 
-    return JudgeFileResult(
+    result = JudgeFileResult(
         clips=clips,
         model=judge_model,
         min_score=threshold,
         descriptions_provided=bool(descriptions),
     )
+    if on_progress:
+        on_progress(
+            f"judge {_model_short_name(judge_model)} done: {result.passes}/{result.total}"
+        )
+    return result
 
 
 def judge_results_data_panel(
@@ -585,18 +606,34 @@ def judge_results_data_panel(
     client: OpenAI | None = None,
     models: list[str] | None = None,
     min_score: int | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> JudgeFileResult:
     panel_models = resolve_judge_models(panel=True, override=models)
+    if on_progress:
+        names = ", ".join(_model_short_name(m) for m in panel_models)
+        on_progress(f"panel: {len(panel_models)} judges ({names})")
     per_judge: dict[str, JudgeFileResult] = {}
-    for judge_model in panel_models:
+    for judge_index, judge_model in enumerate(panel_models, start=1):
+        if on_progress:
+            on_progress(
+                f"panel judge {judge_index}/{len(panel_models)}: {_model_short_name(judge_model)}"
+            )
+
+        def _judge_progress(msg: str, *, _jm: str = judge_model) -> None:
+            if on_progress:
+                on_progress(msg)
+
         per_judge[judge_model] = judge_results_data(
             data,
             descriptions=descriptions,
             client=client,
             model=judge_model,
             min_score=min_score,
+            on_progress=_judge_progress,
         )
 
+    if on_progress:
+        on_progress("panel: aggregating median scores")
     aggregated_clips: list[ClipJudgeResult] = []
     for index in range(len(data)):
         per_clip = {model: result.clips[index] for model, result in per_judge.items()}
@@ -604,7 +641,7 @@ def judge_results_data_panel(
 
     threshold = min_score if min_score is not None else get_int_env("JUDGE_MIN_SCORE", 3)
     model_label = "panel(median): " + ", ".join(_model_short_name(m) for m in panel_models)
-    return JudgeFileResult(
+    result = JudgeFileResult(
         clips=aggregated_clips,
         model=model_label,
         min_score=threshold,
@@ -612,6 +649,9 @@ def judge_results_data_panel(
         panel_models=panel_models,
         per_judge=per_judge,
     )
+    if on_progress:
+        on_progress(f"panel median: {result.passes}/{result.total}")
+    return result
 
 
 def judge_file(

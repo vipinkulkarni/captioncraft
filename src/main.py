@@ -4,7 +4,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from src.caption import get_fireworks_client
+from src.caption import get_fireworks_client, resolve_llm_client
 from src.pipeline import run_full_tasks
 
 
@@ -54,11 +54,17 @@ def main() -> None:
         sys.exit(2)
 
     try:
-        client = get_fireworks_client()
+        vision_client = resolve_llm_client(vision_model)
+        caption_client = resolve_llm_client(caption_model)
+        if caption_client is None:
+            raise RuntimeError(
+                "CAPTION_MODEL requires Fireworks or OpenRouter (not Google AI vision)"
+            )
         run_full_tasks(
             tasks_path=tasks_path,
             results_path=results_path,
-            client=client,
+            client=vision_client or caption_client,
+            caption_client=caption_client,
             vision_model=vision_model,
             caption_model=caption_model,
         )

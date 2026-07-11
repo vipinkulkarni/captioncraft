@@ -6,6 +6,8 @@ import json
 import re
 from pathlib import Path
 
+from src.caption_salvage import is_drafting_junk
+
 _TECH_JOKE_PATTERN = (
     r"\b(api|bugs?|deploy(?:s|ment|ing|ed)?|production|server|git|code|stack overflow|"
     r"debug(?:ging)?|runtime|ci|merge|packet|ddos|sprint|backend|frontend|cpu|gpu|"
@@ -97,6 +99,8 @@ def score_caption(text: str, style: str) -> tuple[bool, str]:
         return False, "error"
     if text.lower().startswith("video caption ("):
         return False, "placeholder"
+    if is_drafting_junk(text):
+        return False, "meta-leak"
     lower = text.lower()
     if any(lower.startswith(p) for p in NEUTRAL_PREFIXES):
         return False, "neutral-copy"

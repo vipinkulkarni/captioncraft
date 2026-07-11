@@ -47,12 +47,45 @@ def _as_string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _fallback_subject_from_setting(setting: str) -> dict[str, Any]:
+    """Synthesize a scene subject when the model omits subjects for scenery-only clips."""
+    lower = setting.strip().lower()
+    if "park" in lower:
+        name = "park scene"
+    elif any(word in lower for word in ("beach", "coast", "shore", "coastline")):
+        name = "coastal scene"
+    elif any(word in lower for word in ("ocean", "sea", "waves")):
+        name = "ocean scene"
+    elif "office" in lower:
+        name = "office scene"
+    elif any(word in lower for word in ("meadow", "field")):
+        name = "meadow scene"
+    elif "garden" in lower:
+        name = "garden scene"
+    else:
+        clause = setting.split(",")[0].strip()
+        for prefix in ("outdoor ", "indoor "):
+            if clause.lower().startswith(prefix):
+                clause = clause[len(prefix) :].strip()
+        words = clause.split()
+        name = " ".join(words[:4]).strip() or "scene"
+        if "scene" not in name.lower():
+            name = f"{name} scene"
+    return {"name": name, "colors": [], "distinguishing": []}
+
+
 def _validate_payload(data: Any) -> tuple[bool, str, VideoDescription | None]:
     if not isinstance(data, dict):
         return False, "InvalidJSON", None
 
+    setting = str(data.get("setting", "")).strip()
+    actions_early = str(data.get("actions_early", "")).strip()
+    actions_late = str(data.get("actions_late", "")).strip()
+    if not setting or not actions_early or not actions_late:
+        return False, "InvalidJSON", None
+
     subjects_raw = data.get("subjects")
-    if not isinstance(subjects_raw, list) or not subjects_raw:
+    if not isinstance(subjects_raw, list):
         return False, "InvalidJSON", None
 
     subjects: list[dict[str, Any]] = []
@@ -61,7 +94,7 @@ def _validate_payload(data: Any) -> tuple[bool, str, VideoDescription | None]:
             return False, "InvalidJSON", None
         name = str(item.get("name", "")).strip()
         if not name:
-            return False, "InvalidJSON", None
+            continue
         subjects.append(
             {
                 "name": name,
@@ -70,11 +103,8 @@ def _validate_payload(data: Any) -> tuple[bool, str, VideoDescription | None]:
             }
         )
 
-    setting = str(data.get("setting", "")).strip()
-    actions_early = str(data.get("actions_early", "")).strip()
-    actions_late = str(data.get("actions_late", "")).strip()
-    if not setting or not actions_early or not actions_late:
-        return False, "InvalidJSON", None
+    if not subjects:
+        subjects.append(_fallback_subject_from_setting(setting))
 
     description = VideoDescription(
         subjects=subjects,
@@ -87,9 +117,25 @@ def _validate_payload(data: Any) -> tuple[bool, str, VideoDescription | None]:
     return True, "", description
 
 
+def _extract_json_object(raw: str) -> str:
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        return text[start : end + 1]
+    return text
+
+
 def parse_describe_json(raw: str) -> tuple[bool, str, str]:
     """Return (ok, failure_reason, formatted_style_context)."""
-    text = (raw or "").strip()
+    text = _extract_json_object(raw)
     if not text:
         return False, "EmptyResponse", ""
 

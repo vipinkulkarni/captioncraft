@@ -5,6 +5,8 @@ from src.caption import (
     _build_style_user_prompt,
     _is_bad_output,
     _is_meta_leak,
+    _maybe_salvage_meta_leak_preamble,
+    _normalize_style_output,
     looks_truncated,
     load_prompt,
 )
@@ -65,6 +67,24 @@ class TestMetaLeakDetection:
     def test_clean_captions_pass(self):
         for text in CLEAN_CAPTION_SAMPLES:
             assert not _is_meta_leak(text), repr(text[:60])
+
+    def test_preamble_salvage(self):
+        raw = (
+            "Caption: Orange kitten walks through green foliage before pausing "
+            "near the camera lens."
+        )
+        assert _is_meta_leak(raw)
+        salvaged = _maybe_salvage_meta_leak_preamble(raw)
+        assert salvaged is not None
+        assert not _is_meta_leak(salvaged)
+        bad, reason = _is_bad_output(salvaged, style="sarcastic")
+        assert not bad and reason == ""
+
+    def test_normalize_strips_label_preamble(self):
+        raw = "Here's the caption: Waves roll onto a sandy beach at dusk."
+        normalized = _normalize_style_output(raw, style="sarcastic")
+        assert normalized.startswith("Waves roll")
+        assert not _is_meta_leak(normalized)
 
 
 class TestBadOutput:

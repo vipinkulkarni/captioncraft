@@ -23,5 +23,6 @@ Rules:
 - actions_early and actions_late must describe visible motion only — no inferred emotions or reactions.
 - If the subject keeps typing throughout, say they type continuously; do not invent a glance away unless clearly visible.
 - subjects must contain at least one entry with a non-empty name.
+- If no person or animal is clearly visible, use a short scene label (e.g. park scene, ocean waves, code editor screen).
 - setting, actions_early, and actions_late must be non-empty strings.
 - English only. No emojis.
