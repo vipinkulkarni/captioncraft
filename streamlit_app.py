@@ -12,7 +12,8 @@ if str(_ROOT) not in sys.path:
 import streamlit as st
 from dotenv import load_dotenv
 
-load_dotenv(_ROOT / ".env", override=True)
+# Shell / Streamlit secrets win over repo .env (matches src.main).
+load_dotenv(_ROOT / ".env", override=False)
 
 from src.caption import STYLES
 from src.llm_clients import is_google_ai_model, is_openrouter_model, resolve_llm_client
@@ -26,6 +27,17 @@ def _env(name: str, default: str = "") -> str:
 _DEFAULT_VISION_MODEL = "google-ai/gemma-4-26b-a4b-it"
 _DEFAULT_CAPTION_MODEL = "accounts/fireworks/models/deepseek-v4-flash"
 _DEFAULT_VISION_FALLBACK = "accounts/fireworks/models/minimax-m3"
+
+
+def _apply_demo_env() -> None:
+    """Align with Docker agent caption stack; skip batch-only judge for single-clip demo."""
+    os.environ.setdefault("JUDGE_RETRY", "0")
+    os.environ.setdefault("STYLE_JSON_MODE", "1")
+    os.environ.setdefault("CAPTION_MODEL_POOL", "deepseek-v4-flash,deepseek-v4-flash")
+    os.environ.setdefault("PARALLEL_STYLES", "1")
+    os.environ.setdefault("STYLE_META_LEAK_SALVAGE", "1")
+    os.environ.setdefault("GOOGLE_API_TIMEOUT_S", "30")
+    os.environ.setdefault("DESCRIBE_MAX_ATTEMPTS_WITH_FALLBACK", "1")
 
 
 def _default_vision_model() -> str:
@@ -92,7 +104,8 @@ st.markdown(
 
 st.title("CaptionCraft demo")
 st.caption(
-    "One vision describe call, then four styled captions — same pipeline as the Docker agent."
+    "Gemma 4 describe → four DeepSeek rewrites (best-of-2 · JSON mode). "
+    "Same caption stack as the Docker agent; batch runs add pipelined judge+retry."
 )
 
 with st.sidebar:
@@ -120,15 +133,25 @@ with st.sidebar:
         st.error(
             "Missing `FIREWORKS_API_KEY`. On Streamlit Cloud: App → Settings → Secrets."
         )
-    st.caption("Tip: use the bird-clip URL below for a fast ~30s demo.")
+
+    with st.expander("Pipeline (Docker batch)"):
+        st.markdown(
+            """
+- Overlap describe + caption across clips
+- Prefetch next 2 downloads
+- Pipelined **gpt-oss-120b** judge + retry
+- 540s budget · deadline guard → M3
+"""
+        )
+    st.caption("Demo disables judge+retry for speed (~30–90s per clip).")
 
 st.subheader("Input")
 
 with st.form("cc_form", clear_on_submit=False):
     video_url = st.text_input(
         "Video URL",
-        placeholder=_DEMO_VIDEO_URL,
-        help="Paste any public MP4 URL. The placeholder is a 30s bird clip for quick demos.",
+        value=_DEMO_VIDEO_URL,
+        help="Public MP4 URL. Default is a 30s bird clip for fast demos.",
     )
 
     task_id = st.text_input("Task ID (optional)", value="demo_001")
@@ -136,6 +159,8 @@ with st.form("cc_form", clear_on_submit=False):
     submitted = st.form_submit_button("Generate captions", type="primary")
 
 if submitted:
+    _apply_demo_env()
+
     if not _default_vision_model():
         st.error("Missing `VISION_MODEL` (or `FIREWORKS_MODEL`).")
         st.stop()
@@ -165,7 +190,7 @@ if submitted:
         st.error("Pick at least one style.")
         st.stop()
 
-    with st.spinner("Downloading, describing, and captioning (may take 30–90s)..."):
+    with st.spinner("Downloading, describing, and captioning (typically 30–90s)..."):
         vision_client = resolve_llm_client(vision_model)
         caption_client = resolve_llm_client(caption_model)
         if caption_client is None:
