@@ -1,10 +1,10 @@
 """Tests for LLM client routing."""
 
-from src.caption import (
+from src.caption import resolve_caption_model_pool
+from src.llm_clients import (
     is_google_ai_model,
     is_openrouter_model,
-    resolve_caption_model_pool,
-    _resolve_google_model_id,
+    resolve_google_model_id as _resolve_google_model_id,
 )
 
 

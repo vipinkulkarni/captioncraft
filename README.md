@@ -59,10 +59,16 @@ The demo supports either:
 
 ```toml
 FIREWORKS_API_KEY = "..."
-VISION_MODEL = "accounts/fireworks/models/minimax-m3"
+GOOGLE_API_KEY = "..."
+VISION_MODEL = "google-ai/gemma-4-26b-a4b-it"
+VISION_FALLBACK_MODEL = "accounts/fireworks/models/minimax-m3"
 CAPTION_MODEL = "accounts/fireworks/models/deepseek-v4-flash"
 PARALLEL_STYLES = "1"
+OVERLAP_PIPELINE = "1"
+PREFETCH_DEPTH = "2"
 ```
+
+The published **Docker image** uses the same Gemma 4 + M3 fallback + DeepSeek stack. Both `FIREWORKS_API_KEY` and `GOOGLE_API_KEY` are baked at build time (GitHub Actions secrets).
 
 Streamlit will give you a public **demo URL** (use it for the submission “Demo Application URL” field).
 

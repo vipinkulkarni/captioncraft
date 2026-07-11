@@ -21,6 +21,15 @@ from src.results import (
     caption_error_from_reason,
     process_failure_string,
 )
+from src.llm_clients import (
+    get_fireworks_client,
+    get_openrouter_client,
+    google_api_key as _google_api_key,
+    is_google_ai_model,
+    is_openrouter_model,
+    resolve_google_model_id as _resolve_google_model_id,
+    resolve_llm_client,
+)
 from src.retry import RetryPolicy, call_with_retry
 from src.caption_salvage import (
     compress_caption_call,
@@ -627,40 +636,6 @@ def caption_pool_enabled() -> bool:
     return len(resolve_caption_model_pool()) > 1
 
 
-def is_openrouter_model(model: str) -> bool:
-    """OpenRouter slugs look like provider/model-name (not Fireworks accounts/ paths)."""
-    slug = model.strip()
-    if not slug or slug.startswith("accounts/") or is_google_ai_model(slug):
-        return False
-    return "/" in slug
-
-
-def is_google_ai_model(model: str) -> bool:
-    """Google AI Studio / Gemini API model ids (direct, not OpenRouter)."""
-    slug = model.strip().lower()
-    if not slug or slug.startswith("accounts/"):
-        return False
-    if slug.startswith("google-ai/"):
-        return True
-    return slug.startswith("gemma-")
-
-
-def _resolve_google_model_id(model: str) -> str:
-    slug = model.strip()
-    if slug.lower().startswith("google-ai/"):
-        return slug.split("/", 1)[1]
-    return slug
-
-
-def _google_api_key() -> str:
-    key = os.environ.get("GOOGLE_API_KEY", "").strip() or os.environ.get(
-        "GEMINI_API_KEY", ""
-    ).strip()
-    if not key:
-        raise RuntimeError("Missing GOOGLE_API_KEY (or GEMINI_API_KEY)")
-    return key
-
-
 def _google_finish_reason(response) -> str | None:
     candidates = getattr(response, "candidates", None) or []
     if not candidates:
@@ -747,49 +722,3 @@ def _google_response_text(response) -> str:
         if chunk:
             chunks.append(chunk.strip())
     return "\n".join(chunks).strip()
-
-
-def get_openrouter_client() -> OpenAI:
-    api_key = os.environ.get("OPENROUTER_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("Missing OPENROUTER_API_KEY")
-
-    timeout_s = get_float_env("API_TIMEOUT_S", 45.0)
-    headers: dict[str, str] = {}
-    referer = os.environ.get("OPENROUTER_REFERER", "").strip()
-    title = os.environ.get("OPENROUTER_TITLE", "").strip()
-    if referer:
-        headers["HTTP-Referer"] = referer
-    if title:
-        headers["X-Title"] = title
-
-    return OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=api_key,
-        timeout=timeout_s,
-        max_retries=0,
-        default_headers=headers or None,
-    )
-
-
-def resolve_llm_client(model: str, *, fallback: OpenAI | None = None) -> OpenAI | None:
-    if is_google_ai_model(model):
-        _google_api_key()
-        return None
-    if is_openrouter_model(model):
-        return get_openrouter_client()
-    return fallback or get_fireworks_client()
-
-
-def get_fireworks_client() -> OpenAI:
-    api_key = os.environ.get("FIREWORKS_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("Missing FIREWORKS_API_KEY")
-
-    timeout_s = get_float_env("API_TIMEOUT_S", 45.0)
-    return OpenAI(
-        base_url="https://api.fireworks.ai/inference/v1",
-        api_key=api_key,
-        timeout=timeout_s,
-        max_retries=0,
-    )

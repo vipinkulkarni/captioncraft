@@ -1,11 +1,21 @@
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
-import streamlit as st
+# Ensure repo root is on sys.path when Streamlit changes the working directory.
+_ROOT = Path(__file__).resolve().parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-from src.caption import STYLES, is_google_ai_model, is_openrouter_model, resolve_llm_client
+import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv(_ROOT / ".env", override=True)
+
+from src.caption import STYLES
+from src.llm_clients import is_google_ai_model, is_openrouter_model, resolve_llm_client
 from src.pipeline import run_full_tasks
 
 
@@ -13,12 +23,26 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+_DEFAULT_VISION_MODEL = "google-ai/gemma-4-26b-a4b-it"
+_DEFAULT_CAPTION_MODEL = "accounts/fireworks/models/deepseek-v4-flash"
+_DEFAULT_VISION_FALLBACK = "accounts/fireworks/models/minimax-m3"
+
+
 def _default_vision_model() -> str:
-    return _env("VISION_MODEL") or _env("FIREWORKS_MODEL")
+    raw = _env("VISION_MODEL")
+    if raw and is_google_ai_model(raw):
+        return raw
+    # Legacy shell/Cloud secrets often set VISION_MODEL to MiniMax — Gemma is primary.
+    return _DEFAULT_VISION_MODEL
 
 
 def _default_caption_model() -> str:
-    return _env("CAPTION_MODEL") or _env("FIREWORKS_MODEL") or _default_vision_model()
+    return _env("CAPTION_MODEL") or _DEFAULT_CAPTION_MODEL
+
+
+def _default_vision_fallback() -> str:
+    return _env("VISION_FALLBACK_MODEL") or _DEFAULT_VISION_FALLBACK
+
 
 def _pretty_model(model: str) -> str:
     m = (model or "").strip()
@@ -26,13 +50,20 @@ def _pretty_model(model: str) -> str:
         return ""
     lower = m.lower()
     if "minimax-m3" in lower:
-        return "MiniMax M3 (vision)"
+        return "MiniMax M3"
+    if "gemma-4" in lower or "gemma_4" in lower:
+        return "Gemma 4 (vision)"
     if "gemma" in lower:
-        return "Gemma (vision)"
+        return "Gemma"
     if "deepseek-v4-flash" in lower:
-        return "DeepSeek V4 Flash (text)"
-    # Fall back to last path segment for readability.
+        return "DeepSeek V4 Flash"
     return m.rsplit("/", 1)[-1]
+
+
+_DEMO_VIDEO_URL = (
+    "https://storage.googleapis.com/amd-hackathon-clips/"
+    "1860079-uhd_2560_1440_25fps.mp4"
+)
 
 
 st.set_page_config(page_title="CaptionCraft Demo", page_icon="🎬", layout="centered")
@@ -60,30 +91,45 @@ st.markdown(
 )
 
 st.title("CaptionCraft demo")
-st.caption("Generate 4 styled captions from a video URL using the same pipeline as the Docker agent.")
+st.caption(
+    "One vision describe call, then four styled captions — same pipeline as the Docker agent."
+)
 
 with st.sidebar:
     st.subheader("Config")
-    st.text_input("Vision model", value=_pretty_model(_default_vision_model()), disabled=True)
-    st.text_input("Caption model", value=_pretty_model(_default_caption_model()), disabled=True)
+    vision_model = _default_vision_model()
+    caption_model = _default_caption_model()
+    fallback_model = _default_vision_fallback()
+    st.text_input("Vision model", value=_pretty_model(vision_model), disabled=True)
+    st.text_input(
+        "Vision fallback",
+        value=_pretty_model(fallback_model),
+        disabled=True,
+    )
+    st.text_input("Caption model", value=_pretty_model(caption_model), disabled=True)
 
     key_len = len(_env("FIREWORKS_API_KEY"))
     or_key_len = len(_env("OPENROUTER_API_KEY"))
     google_key_len = len(_env("GOOGLE_API_KEY")) or len(_env("GEMINI_API_KEY"))
     st.write(f"Fireworks API key: {'set' if key_len else 'missing'}")
-    st.write(f"OpenRouter API key: {'set' if or_key_len else 'missing'}")
     st.write(f"Google AI API key: {'set' if google_key_len else 'missing'}")
-    if 0 < key_len < 16:
-        st.warning("Your API key looks like a placeholder (very short).")
+    st.write(f"OpenRouter API key: {'set' if or_key_len else 'missing'}")
+    if is_google_ai_model(vision_model) and not google_key_len:
+        st.error("Gemma vision needs `GOOGLE_API_KEY` in Streamlit secrets.")
     if not key_len:
         st.error(
-            "Missing `FIREWORKS_API_KEY`. On Streamlit Cloud, set it in App → Settings → Secrets."
+            "Missing `FIREWORKS_API_KEY`. On Streamlit Cloud: App → Settings → Secrets."
         )
+    st.caption("Tip: use the bird-clip URL below for a fast ~30s demo.")
 
 st.subheader("Input")
 
 with st.form("cc_form", clear_on_submit=False):
-    video_url = st.text_input("Video URL", placeholder="https://.../video.mp4")
+    video_url = st.text_input(
+        "Video URL",
+        placeholder=_DEMO_VIDEO_URL,
+        help="Paste any public MP4 URL. The placeholder is a 30s bird clip for quick demos.",
+    )
 
     task_id = st.text_input("Task ID (optional)", value="demo_001")
     styles = st.multiselect("Styles", options=list(STYLES), default=list(STYLES))
@@ -119,7 +165,7 @@ if submitted:
         st.error("Pick at least one style.")
         st.stop()
 
-    with st.spinner("Running describe + style captions..."):
+    with st.spinner("Downloading, describing, and captioning (may take 30–90s)..."):
         vision_client = resolve_llm_client(vision_model)
         caption_client = resolve_llm_client(caption_model)
         if caption_client is None:
