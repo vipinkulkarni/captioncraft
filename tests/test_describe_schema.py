@@ -29,6 +29,15 @@ class TestDescribeSchema:
         assert "Actions (early):" in formatted
         assert "Actions (late):" in formatted
 
+    def test_parse_valid_json_with_camera(self):
+        raw = SAMPLE_JSON.replace(
+            '"background": "green leaves and branches"',
+            '"camera": "static close view", "background": "green leaves and branches"',
+        )
+        ok, reason, formatted = parse_describe_json(raw)
+        assert ok, reason
+        assert "Camera: static close view" in formatted
+
     def test_salvages_empty_subjects_from_setting(self):
         raw = """{
           "subjects": [],

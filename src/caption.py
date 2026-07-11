@@ -344,7 +344,7 @@ def vision_describe_call(
         )
     if client is None:
         raise RuntimeError("OpenAI-compatible client required for this vision model")
-    system_prompt = load_prompt("describe")
+    system_prompt = load_prompt(_describe_prompt_name())
     content: list[dict] = [
         {"type": "image_url", "image_url": {"url": _to_data_url(b)}} for b in frames_jpeg
     ]
@@ -686,7 +686,7 @@ def _google_vision_describe_call(
     from google import genai
     from google.genai import types
 
-    system_prompt = load_prompt("describe")
+    system_prompt = load_prompt(_describe_prompt_name())
     client = genai.Client(api_key=_google_api_key())
     model_id = _resolve_google_model_id(model)
 

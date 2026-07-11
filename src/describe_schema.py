@@ -14,6 +14,7 @@ class VideoDescription:
     actions_early: str
     actions_late: str
     background: str = ""
+    camera: str = ""
     notable_moments: list[str] = field(default_factory=list)
 
     def to_style_context(self) -> str:
@@ -22,6 +23,8 @@ class VideoDescription:
             f"Actions (early): {self.actions_early}",
             f"Actions (late): {self.actions_late}",
         ]
+        if self.camera:
+            lines.append(f"Camera: {self.camera}")
         if self.background:
             lines.append(f"Background: {self.background}")
         for index, subject in enumerate(self.subjects, start=1):
@@ -112,6 +115,7 @@ def _validate_payload(data: Any) -> tuple[bool, str, VideoDescription | None]:
         actions_early=actions_early,
         actions_late=actions_late,
         background=str(data.get("background", "")).strip(),
+        camera=str(data.get("camera", "")).strip(),
         notable_moments=_as_string_list(data.get("notable_moments")),
     )
     return True, "", description

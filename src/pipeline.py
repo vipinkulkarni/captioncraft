@@ -301,6 +301,124 @@ def _describe_frames(
     )
 
 
+def _vision_fallback_model() -> str:
+    return os.environ.get("VISION_FALLBACK_MODEL", "").strip()
+
+
+def _describe_with_fallback(
+    *,
+    client: OpenAI | None,
+    model: str,
+    task_id: str,
+    frames: list[bytes],
+) -> DescribeResult:
+    result = _describe_frames(
+        client=client,
+        model=model,
+        task_id=task_id,
+        frames=frames,
+    )
+    if result.ok:
+        return result
+
+    fallback = _vision_fallback_model()
+    if not fallback or fallback == model:
+        return result
+
+    log_human(
+        f"  {task_id}: primary describe failed "
+        f"({result.error_detail or result.error}), trying fallback {fallback}",
+    )
+    fallback_client = resolve_llm_client(fallback, fallback=client)
+    fallback_result = _describe_frames(
+        client=fallback_client,
+        model=fallback,
+        task_id=task_id,
+        frames=frames,
+    )
+    if fallback_result.ok:
+        return fallback_result
+    return result
+
+
+@dataclass
+class _PreparedClip:
+    task_id: str
+    frames: list[bytes]
+    frames_count: int
+    video_duration_s: float
+    download_s: float
+
+
+def _prepare_clip_frames(
+    *,
+    task: dict,
+    task_index: int,
+    tasks: list[dict],
+    ctx: _RunContext,
+    prefetch: _ClipPrefetch,
+) -> _PreparedClip:
+    task_id = str(task.get("task_id", ""))
+    video_url = str(task.get("video_url", ""))
+    t_dl = time.perf_counter()
+    td, video_path = prefetch.take(video_url)
+    try:
+        log_human(f"  {task_id}: extracting frames...")
+        frames, duration_s = extract_frames_jpeg(video_path, width=ctx.frame_width)
+        log_human(
+            f"  {task_id}: extracted {len(frames)} frames (duration={duration_s:.1f}s)",
+        )
+    finally:
+        td.cleanup()
+    download_s = time.perf_counter() - t_dl
+
+    next_url = _next_prefetch_url(
+        tasks,
+        task_index,
+        descriptions_cache=ctx.descriptions_cache,
+        dry_run=ctx.dry_run,
+    )
+    if next_url:
+        prefetch.schedule(next_url)
+
+    return _PreparedClip(
+        task_id=task_id,
+        frames=frames,
+        frames_count=len(frames),
+        video_duration_s=duration_s,
+        download_s=download_s,
+    )
+
+
+def _prepare_and_describe(
+    *,
+    task: dict,
+    task_index: int,
+    tasks: list[dict],
+    ctx: _RunContext,
+    prefetch: _ClipPrefetch,
+    vision_client: OpenAI | None,
+    vision_model: str,
+) -> tuple[_PreparedClip, DescribeResult]:
+    prep = _prepare_clip_frames(
+        task=task,
+        task_index=task_index,
+        tasks=tasks,
+        ctx=ctx,
+        prefetch=prefetch,
+    )
+    log_human(f"  {prep.task_id}: describing...")
+    t0 = time.perf_counter()
+    describe = _describe_with_fallback(
+        client=vision_client,
+        model=vision_model,
+        task_id=prep.task_id,
+        frames=prep.frames,
+    )
+    log_human(f"  {prep.task_id}: describe done in {time.perf_counter() - t0:.1f}s")
+    return prep, describe
+
+
 def _caption_styles_from_description(
     *,
     client: OpenAI,
@@ -519,7 +637,8 @@ def _log_config(ctx: _RunContext) -> None:
         f"frame_interval_s={os.environ.get('FRAME_INTERVAL_S', '4')} "
         f"frame_count_min={os.environ.get('FRAME_COUNT_MIN', '8')} "
         f"frame_count_max={os.environ.get('FRAME_COUNT_MAX', '24')} "
-        f"api_timeout_s={os.environ.get('API_TIMEOUT_S', '45')}",
+        f"api_timeout_s={os.environ.get('API_TIMEOUT_S', '45')} "
+        f"vision_fallback={_vision_fallback_model() or 'none'}",
     )
     emit_config_event(
         vision=ctx.vision_model,
@@ -580,6 +699,131 @@ def _normalize_requested_styles(styles: object) -> list[str]:
 def _append_and_persist(results: list[dict], result: dict, results_path: Path) -> None:
     results.append(result)
     write_results(results_path, results)
+
+
+def _finish_task_caption(
+    *,
+    task: dict,
+    prepared: _PreparedClip,
+    describe: DescribeResult,
+    describe_s: float,
+    ctx: _RunContext,
+    caption_client: OpenAI,
+) -> dict:
+    task_id = str(task.get("task_id", ""))
+    requested_styles = _normalize_requested_styles(task.get("styles", []))
+    if not requested_styles:
+        requested_styles = ["formal"]
+
+    download_s = prepared.download_s
+    caption_s = 0.0
+    style_attempts: dict[str, int] = {}
+    try:
+        t1 = time.perf_counter()
+        log_human(f"  {task_id}: captioning styles...")
+        captions, style_attempts = _caption_styles_from_description(
+            client=caption_client,
+            model=ctx.caption_model or "",
+            describe=describe,
+            requested_styles=requested_styles,
+            parallel=ctx.parallel_styles,
+        )
+        caption_s = time.perf_counter() - t1
+        log_human(
+            f"  {task_id}: done in {download_s + describe_s + caption_s:.1f}s "
+            f"(download={download_s:.1f}s, describe={describe_s:.1f}s, styles={caption_s:.1f}s)",
+        )
+        _emit_task_event(
+            task_id=task_id,
+            stage="complete",
+            download_s=download_s,
+            describe_s=describe_s,
+            styles_s=caption_s,
+            frames=prepared.frames_count,
+            video_duration_s=prepared.video_duration_s,
+            describe_attempts=describe.attempts,
+            style_attempts=style_attempts,
+            describe_error=describe.error.value if describe.error else None,
+        )
+    except Exception as e:
+        log_human(f"  {task_id}: Failed to process video: {type(e).__name__}")
+        captions = {
+            style: public_process_failure(
+                ProcessError.PROCESSING,
+                style=style,
+                detail=type(e).__name__,
+            )
+            for style in requested_styles
+        }
+        _emit_task_event(
+            task_id=task_id,
+            stage="error",
+            download_s=download_s,
+            describe_s=describe_s,
+            styles_s=caption_s,
+            frames=prepared.frames_count,
+            video_duration_s=prepared.video_duration_s,
+            describe_attempts=describe.attempts,
+            style_attempts=style_attempts or None,
+            describe_error=describe.error.value if describe.error else None,
+            process_error=type(e).__name__,
+        )
+    return {"task_id": task_id, "captions": captions}
+
+
+def _process_task_live(
+    *,
+    task: dict,
+    task_index: int,
+    tasks: list[dict],
+    ctx: _RunContext,
+    prefetch: _ClipPrefetch,
+    vision_client: OpenAI | None,
+    caption_client: OpenAI,
+    prepared: _PreparedClip | None = None,
+    describe: DescribeResult | None = None,
+) -> dict:
+    """Process one clip when describe may already be running/completed (overlap path)."""
+    task_id = str(task.get("task_id", ""))
+    video_url = str(task.get("video_url", ""))
+    requested_styles = _normalize_requested_styles(task.get("styles", []))
+
+    if not task_id or not video_url or not requested_styles:
+        if not requested_styles:
+            requested_styles = ["formal"]
+        captions = {
+            style: public_process_failure(ProcessError.INVALID_TASK, style=style)
+            for style in requested_styles
+        }
+        _emit_task_event(task_id=task_id or "unknown", stage="invalid")
+        return {"task_id": task_id or "unknown", "captions": captions}
+
+    log_human(f"Processing {task_id} (describe + {len(requested_styles)} styles)...")
+
+    describe_s = 0.0
+    if describe is None or prepared is None:
+        prep, describe = _prepare_and_describe(
+            task=task,
+            task_index=task_index,
+            tasks=tasks,
+            ctx=ctx,
+            prefetch=prefetch,
+            vision_client=vision_client,
+            vision_model=ctx.vision_model or "",
+        )
+        prepared = prep
+        describe_s = (describe.total_ms or 0.0) / 1000.0
+    else:
+        describe_s = (describe.total_ms or 0.0) / 1000.0
+
+    return _finish_task_caption(
+        task=task,
+        prepared=prepared,
+        describe=describe,
+        describe_s=describe_s,
+        ctx=ctx,
+        caption_client=caption_client,
+    )
 
 
 def _process_task(
@@ -669,7 +913,7 @@ def _process_task(
 
             t0 = time.perf_counter()
             log_human(f"  {task_id}: describing...")
-            describe = _describe_frames(
+            describe = _describe_with_fallback(
                 client=vision_client,
                 model=ctx.vision_model,
                 task_id=task_id,
@@ -730,6 +974,105 @@ def _process_task(
     return {"task_id": task_id, "captions": captions}
 
 
+def _next_live_task_index(
+    tasks: list[dict],
+    after_index: int,
+    *,
+    descriptions_cache: dict[str, str],
+) -> int | None:
+    for j in range(after_index + 1, len(tasks)):
+        task_id = str(tasks[j].get("task_id", ""))
+        if task_id and not descriptions_cache.get(task_id, ""):
+            return j
+    return None
+
+
+def _run_tasks_with_overlap(
+    *,
+    tasks: list[dict],
+    results: list[dict],
+    results_path: Path,
+    ctx: _RunContext,
+    prefetch: _ClipPrefetch,
+    vision_client: OpenAI | None,
+    caption_client: OpenAI,
+) -> None:
+    describe_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="describe-overlap")
+    pending_describe: Future[tuple[_PreparedClip, DescribeResult]] | None = None
+
+    try:
+        for task_index, task in enumerate(tasks):
+            task_id = str(task.get("task_id", ""))
+            cached_description = ctx.descriptions_cache.get(task_id, "")
+
+            if cached_description:
+                if pending_describe is not None:
+                    pending_describe.result()
+                    pending_describe = None
+                result = _process_task(
+                    task=task,
+                    task_index=task_index,
+                    tasks=tasks,
+                    ctx=ctx,
+                    prefetch=prefetch,
+                )
+                _append_and_persist(results, result, results_path)
+                continue
+
+            prepared: _PreparedClip | None = None
+            describe: DescribeResult | None = None
+            describe_s = 0.0
+            if pending_describe is not None:
+                prepared, describe = pending_describe.result()
+                pending_describe = None
+                describe_s = (describe.total_ms or 0.0) / 1000.0
+            else:
+                log_human(
+                    f"Processing {task_id} (describe + "
+                    f"{len(_normalize_requested_styles(task.get('styles', [])))} styles)...",
+                )
+                prepared, describe = _prepare_and_describe(
+                    task=task,
+                    task_index=task_index,
+                    tasks=tasks,
+                    ctx=ctx,
+                    prefetch=prefetch,
+                    vision_client=vision_client,
+                    vision_model=ctx.vision_model or "",
+                )
+                describe_s = (describe.total_ms or 0.0) / 1000.0
+
+            next_index = _next_live_task_index(
+                tasks,
+                task_index,
+                descriptions_cache=ctx.descriptions_cache,
+            )
+            if next_index is not None:
+                next_task = tasks[next_index]
+                pending_describe = describe_pool.submit(
+                    _prepare_and_describe,
+                    task=next_task,
+                    task_index=next_index,
+                    tasks=tasks,
+                    ctx=ctx,
+                    prefetch=prefetch,
+                    vision_client=vision_client,
+                    vision_model=ctx.vision_model or "",
+                )
+
+            result = _finish_task_caption(
+                task=task,
+                prepared=prepared,
+                describe=describe,
+                describe_s=describe_s,
+                ctx=ctx,
+                caption_client=caption_client,
+            )
+            _append_and_persist(results, result, results_path)
+    finally:
+        describe_pool.shutdown(wait=True)
+
+
 def run_full_tasks(
     *,
     tasks_path: Path,
@@ -748,18 +1091,38 @@ def run_full_tasks(
     )
     _log_config(ctx)
 
+    vision_client = resolve_llm_client(vision_model, fallback=client)
+    caption_client = resolve_llm_client(
+        caption_model,
+        fallback=caption_client or client,
+    )
+    if caption_client is None:
+        raise RuntimeError("caption model requires a Fireworks or OpenRouter client")
+
+    overlap = os.environ.get("OVERLAP_PIPELINE", "1") == "1"
     results: list[dict] = []
     with _ClipPrefetch() as prefetch:
         try:
-            for task_index, task in enumerate(tasks):
-                result = _process_task(
-                    task=task,
-                    task_index=task_index,
+            if overlap and not ctx.descriptions_cache:
+                _run_tasks_with_overlap(
                     tasks=tasks,
+                    results=results,
+                    results_path=results_path,
                     ctx=ctx,
                     prefetch=prefetch,
+                    vision_client=vision_client,
+                    caption_client=caption_client,
                 )
-                _append_and_persist(results, result, results_path)
+            else:
+                for task_index, task in enumerate(tasks):
+                    result = _process_task(
+                        task=task,
+                        task_index=task_index,
+                        tasks=tasks,
+                        ctx=ctx,
+                        prefetch=prefetch,
+                    )
+                    _append_and_persist(results, result, results_path)
         finally:
             if results:
                 write_results(results_path, results)

@@ -10,19 +10,24 @@ Return ONLY a single JSON object (no markdown, no commentary) with this exact sc
     }
   ],
   "setting": "indoor/outdoor + location type + lighting/time if visible",
-  "actions_early": "what the main subject does in early frames",
-  "actions_late": "what the main subject does in later frames",
-  "background": "optional background objects or scenery",
-  "notable_moments": ["optional short list of visible beats across frames"]
+  "camera": "static / slow pan / zoom / pull-back / aerial / handheld — how the view changes across frames",
+  "actions_early": "what the main subject does in early frames (1-2 specific visible beats)",
+  "actions_late": "what the main subject does in later frames (1-2 specific visible beats)",
+  "background": "background objects or scenery clearly visible",
+  "notable_moments": ["visible beat 1", "visible beat 2", "optional beat 3"]
 }
 
 Rules:
 - Describe only what is clearly visible. Do not guess or invent details.
+- Do not invent on-screen text, menus, code, or UI labels unless they are clearly readable in the frames.
 - Animals with multiple coat colors must list ALL colors in subjects[].colors (e.g. orange-and-white, not just orange).
 - People: include precise clothing colors in subjects[].colors when visible.
+- camera must describe how the viewpoint moves (pan left/right, zoom out, static, etc.) when visible.
+- actions_early and actions_late must differ when motion changes; if nothing changes, say so explicitly.
 - actions_early and actions_late must describe visible motion only — no inferred emotions or reactions.
 - If the subject keeps typing throughout, say they type continuously; do not invent a glance away unless clearly visible.
 - subjects must contain at least one entry with a non-empty name.
 - If no person or animal is clearly visible, use a short scene label (e.g. park scene, ocean waves, code editor screen).
+- notable_moments: include at least two short visible beats when the clip has any motion or change.
 - setting, actions_early, and actions_late must be non-empty strings.
 - English only. No emojis.
