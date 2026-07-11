@@ -7,6 +7,7 @@ Style rules:
 - Still describe what's actually happening in the clip; match setting and actions from the facts.
 - Fresh wording — do not copy or closely paraphrase the input description.
 - Use 1–2 specific details from the description (colors, objects, actions) when provided.
+- Use only facts from the description — never invent actions, UI, or objects not listed.
 - 2 short sentences, under 50 words total.
 - English only. No emojis.
 

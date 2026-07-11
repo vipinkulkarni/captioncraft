@@ -38,8 +38,15 @@ def remember_description(store: dict[str, str], task_id: str, describe: Describe
 
 def list_judge_failures(clip: ClipJudgeResult, *, min_score: int) -> list[tuple[str, str]]:
     failures: list[tuple[str, str]] = []
+    quality_floor = get_int_env("JUDGE_RETRY_QUALITY_MIN", 4)
     for style, score in clip.captions.items():
+        if score.skipped:
+            failures.append((clip.task_id, style))
+            continue
         if not score.passes(min_score=min_score):
+            failures.append((clip.task_id, style))
+            continue
+        if score.accuracy < quality_floor or score.specificity < quality_floor:
             failures.append((clip.task_id, style))
     return failures
 

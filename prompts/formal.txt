@@ -4,6 +4,8 @@ Style rules:
 - Neutral, polished language. No slang, jokes, or sarcasm.
 - Report what happens in order; match setting, surfaces, and actions exactly from the facts.
 - Do not swap locations (e.g. water vs grass) or invent props not in the facts.
+- Use only facts from the description — never invent actions, objects, or on-screen UI not listed.
+- Each sentence must include at least one concrete noun from the facts (color, object, or visible action).
 - Fresh wording — do not copy or closely paraphrase the input description.
 - Use 1–2 specific details from the description (colors, objects, actions) when provided.
 - Exactly 2 short sentences, under 50 words total.

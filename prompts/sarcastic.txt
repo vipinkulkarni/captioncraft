@@ -6,6 +6,7 @@ Style rules:
 - Do not write inspirational prose, nature poetry, or movie-trailer narration.
 - Fresh wording — do not copy or closely paraphrase the input description.
 - Include at least two concrete details from the scene facts (colors, objects, or actions).
+- Use only facts from the description — never invent actions or objects not listed.
 - Match setting and actions from the facts (surface, location, early vs late motion).
 - Write the finished caption only — never draft alternatives, self-checklists, or notes like "Better:", "Let's write:", or "Alternatively:".
 - Both sentences must describe the scene with dry irony; no vague fragments or meta commentary about accuracy.

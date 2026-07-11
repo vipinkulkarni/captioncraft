@@ -22,6 +22,19 @@ def test_list_judge_failures():
     assert list_judge_failures(clip, min_score=3) == [("e01", "sarcastic")]
 
 
+def test_list_judge_failures_quality_floor(monkeypatch):
+    monkeypatch.setenv("JUDGE_RETRY_QUALITY_MIN", "4")
+    clip = ClipJudgeResult(
+        task_id="e01",
+        captions={
+            "formal": CaptionJudgeScore(
+                style="formal", style_fit=5, accuracy=3, specificity=5
+            ),
+        },
+    )
+    assert list_judge_failures(clip, min_score=3) == [("e01", "formal")]
+
+
 def test_pipelined_judge_retries_failed_style(tmp_path, monkeypatch):
     monkeypatch.setenv("JUDGE_RETRY", "1")
     monkeypatch.setenv("JUDGE_MIN_REMAINING_S", "0")

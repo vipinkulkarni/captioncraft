@@ -15,6 +15,7 @@ from src.caption import (
 )
 from src.results import CaptionResult
 from src.scoring import score_caption
+from src.caption_grounding import grounding_bonus
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,12 @@ def is_friendly_placeholder(text: str) -> bool:
     return False
 
 
-def rank_caption(text: str, style: str) -> tuple[int, str]:
+def rank_caption(
+    text: str,
+    style: str,
+    *,
+    description: str | None = None,
+) -> tuple[int, str]:
     if is_friendly_placeholder(text):
         return 0, "friendly-placeholder"
     ok, reason = score_caption(text, style)
@@ -45,7 +51,12 @@ def rank_caption(text: str, style: str) -> tuple[int, str]:
         words = len(text.split())
         # Prefer captions near the prompt target (50 words), not ultra-short.
         length_bonus = max(0, 10 - abs(words - 42) // 3)
-        return 100 + length_bonus, "ok"
+        rank = 100 + length_bonus
+        if description:
+            g_bonus, g_reason = grounding_bonus(description, text)
+            rank += g_bonus
+            return rank, f"ok+{g_reason}"
+        return rank, "ok"
     penalties = {
         "too-long": 45,
         "meta-leak": 25,
@@ -85,7 +96,7 @@ def generate_candidate(
         description=description,
     )
     text = public_caption_result(result, style=style)
-    rank, reason = rank_caption(text, style)
+    rank, reason = rank_caption(text, style, description=description)
     return CaptionCandidate(
         text=text,
         model=model,
