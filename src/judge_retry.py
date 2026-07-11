@@ -25,6 +25,7 @@ from src.llm_judge import (
 )
 from src.results import DescribeResult
 from src.run_log import log_human
+from src.scoring import score_caption
 
 
 def judge_retry_enabled() -> bool:
@@ -36,18 +37,44 @@ def remember_description(store: dict[str, str], task_id: str, describe: Describe
         store[task_id] = describe.text.strip()
 
 
-def list_judge_failures(clip: ClipJudgeResult, *, min_score: int) -> list[tuple[str, str]]:
+def list_judge_failures(
+    clip: ClipJudgeResult,
+    *,
+    min_score: int,
+    captions: dict[str, str] | None = None,
+) -> list[tuple[str, str]]:
     failures: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
     quality_floor = get_int_env("JUDGE_RETRY_QUALITY_MIN", 4)
+    check_regex = get_int_env("JUDGE_RETRY_REGEX", 1) == 1
+
     for style, score in clip.captions.items():
+        key = (clip.task_id, style)
         if score.skipped:
-            failures.append((clip.task_id, style))
+            if key not in seen:
+                failures.append(key)
+                seen.add(key)
             continue
         if not score.passes(min_score=min_score):
-            failures.append((clip.task_id, style))
+            if key not in seen:
+                failures.append(key)
+                seen.add(key)
             continue
         if score.accuracy < quality_floor or score.specificity < quality_floor:
-            failures.append((clip.task_id, style))
+            if key not in seen:
+                failures.append(key)
+                seen.add(key)
+
+    if check_regex and captions:
+        for style, text in captions.items():
+            key = (clip.task_id, str(style))
+            if key in seen:
+                continue
+            ok, _reason = score_caption(str(text), str(style))
+            if not ok:
+                failures.append(key)
+                seen.add(key)
+
     return failures
 
 
@@ -190,7 +217,11 @@ class PipelinedJudgeRetry:
             f"judge retry: {task_id} -> {passing}/{clip.total_styles()} pass"
         )
 
-        for _task_id, style in list_judge_failures(clip, min_score=self._min_score):
+        for _task_id, style in list_judge_failures(
+            clip,
+            min_score=self._min_score,
+            captions={str(k): str(v) for k, v in captions.items()},
+        ):
             if not self._try_retry():
                 log_human("judge retry: stopping retries (budget exhausted)")
                 break

@@ -22,6 +22,26 @@ def test_list_judge_failures():
     assert list_judge_failures(clip, min_score=3) == [("e01", "sarcastic")]
 
 
+def test_list_judge_failures_regex(monkeypatch):
+    monkeypatch.setenv("JUDGE_RETRY_REGEX", "1")
+    clip = ClipJudgeResult(
+        task_id="e06",
+        captions={
+            "humorous_non_tech": CaptionJudgeScore(
+                style="humorous_non_tech", style_fit=5, accuracy=5, specificity=5
+            ),
+        },
+    )
+    captions = {
+        "humorous_non_tech": (
+            "The waterfall deploys like an API stream into the green pool below."
+        ),
+    }
+    assert list_judge_failures(clip, min_score=3, captions=captions) == [
+        ("e06", "humorous_non_tech")
+    ]
+
+
 def test_list_judge_failures_quality_floor(monkeypatch):
     monkeypatch.setenv("JUDGE_RETRY_QUALITY_MIN", "4")
     clip = ClipJudgeResult(
@@ -37,6 +57,7 @@ def test_list_judge_failures_quality_floor(monkeypatch):
 
 def test_pipelined_judge_retries_failed_style(tmp_path, monkeypatch):
     monkeypatch.setenv("JUDGE_RETRY", "1")
+    monkeypatch.setenv("JUDGE_RETRY_REGEX", "0")
     monkeypatch.setenv("JUDGE_MIN_REMAINING_S", "0")
     monkeypatch.setenv("JUDGE_SKIP_DISTINCTNESS", "1")
     monkeypatch.setenv("JUDGE_PARALLEL_STYLES", "0")
