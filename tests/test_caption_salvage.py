@@ -37,6 +37,35 @@ class TestDraftingJunk:
         'Let\'s think: "Pecks at the twigs like debugging a nested if-else."',
         '"Unimpressed by the mountain view" is deadpan. That works.',
         "But we also have the large white rabbit? Not required to.",
+        # Leaks that passed validation in the gemma_v2_fixed_salvage bake-off:
+        "So we can reference the sunlight filtering and the stillness.",
+        '"Teal and blue waves crash against dark rocks like a debug session hitting a wall." Hmm.',
+        '"Waves crash against dark brown rocks like a server handling too many requests." But need to tie to later.',
+        "A large white rabbit closes its.",
+        "Then undercut: The white rabbit, meanwhile, is too busy closing its eyes to notice. "
+        "That uses late action of white rabbit closing eyes. Also.",
+        'Maybe: "The pigeon pecks at the twigs with its yellowish beak, like a critic scanning a draft. '
+        'Then it lifts its grey head, white patch flashing, and stares — waiting for applause." That\'s.',
+        '"Pigeon pecks at twigs like a developer debugging a messy PR. Then lifts its head, realizing '
+        'the fix was in the log all along." But need to match actions: pecks at twigs and log, then.',
+        "Kicker: maybe the bright overhead lighting makes it mundane.",
+        'So her clothes. Use "orange blouse" or "beige blouse". Let\'s adjust:.',
+        "Like relatable absurd comparison: like she's trying to unlock a secret code. "
+        "Then punchline: She keeps glancing down at.",
+        'Possibly: "The cursor hovers over a line of pink-highlighted code like a developer waiting '
+        "for an API response. The autocomplete menu pops up with options, each a potential merge "
+        'request for the next line." But need to match actions: early action is code displayed, late action is.',
+        "Relatable: programmers know autocomplete can be weird. Punchline: absurd suggestions. Good.",
+        'Let\'s refine: "Ginger kitten sits in the shade like a server waiting for an API call. '
+        'Then it walks forward through the leaves, deploying a new patch." That uses.',
+        # Leaks from salvage_v3 bake-off (2026-07-11):
+        "Notable moments: grey rabbit crawls out of grassy mound; large white rabbit stands amidst giant flowers.",
+        'Keep simple: "like it has somewhere important to be" - ironic because it\'s just a rabbit.',
+        "Setting outdoor with green foliage implied. Metaphor: API endpoint, deploy.",
+        "Need to use subject's color. Could say.",
+        'Need to follow shape: "[Visible action] like [dev/engineering metaphor]. [Punchline].".',
+        "Absurd comparison: like she's trying to decode a secret message.",
+        "But ensure using at least one color: pink and blue. Actions: early (code displayed) and late (autocomplete appears). Setting: indoor computer screen. Works.",
     ]
 
     def test_junk_samples_flagged(self):
@@ -71,6 +100,10 @@ class TestDraftingJunk:
         "into the ocean. The white houses cling to a green cliff like they're "
         "afraid of falling in.",
         "Guess even planets can't get a quiet night in.",
+        # Tails that superficially resemble drafting-note endings but are legit.
+        "The rocks have seen a thousand waves and remain a force to be reckoned with.",
+        "Ten minutes of pecking and the twig pile is exactly where it was. That's just how it is.",
+        "The kitten pauses mid-step, plotting something only known to her.",
     ]
 
     def test_legit_captions_not_flagged(self):
@@ -90,6 +123,32 @@ class TestSalvageCandidates:
         assert salvaged is not None
         assert "walks forward" in salvaged.lower() or "kitten" in salvaged.lower()
         assert not _is_meta_leak(salvaged)
+
+    def test_quoted_span_recovered_from_drafting_notes(self):
+        raw = (
+            'Let\'s refine: "Ginger kitten sits in the shade like a server waiting '
+            "for an API call. Then it walks forward through the leaves, deploying "
+            'a new patch." That uses.'
+        )
+        salvaged, _ = pick_valid_candidate(
+            raw, style="humorous_tech", is_valid=_is_bad_output
+        )
+        assert salvaged is not None
+        assert salvaged.startswith("Ginger kitten sits")
+        assert "That uses" not in salvaged
+
+    def test_quoted_span_recovered_when_notes_follow(self):
+        raw = (
+            '"Pigeon pecks at twigs like a developer debugging a messy PR. '
+            'Then lifts its head, realizing the fix was in the log all along." '
+            "But need to match actions: pecks at twigs and log, then."
+        )
+        salvaged, _ = pick_valid_candidate(
+            raw, style="humorous_tech", is_valid=_is_bad_output
+        )
+        assert salvaged is not None
+        assert salvaged.startswith("Pigeon pecks")
+        assert "But need" not in salvaged
 
     def test_label_prefix(self):
         raw = "Caption: Waves roll onto a rocky shore as white foam spreads."

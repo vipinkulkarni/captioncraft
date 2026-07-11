@@ -40,17 +40,39 @@ _DRAFTING_PREFIXES = (
     "check:",
     "possible caption:",
     "possible metaphor:",
+    "possibly:",
+    "maybe:",
+    "kicker:",
+    "relatable:",
+    "like relatable",
     "let's craft:",
     "let's go with",
     "let's write:",
+    "let's refine",
+    "let's try:",
+    "let's adjust",
     "but need to",
     "but we need to",
+    "need to use",
+    "need to follow",
+    "need to match",
+    "need to incorporate",
+    "need to include",
+    "but ensure",
+    "keep simple:",
+    "keep it simple:",
+    "notable moments:",
+    "absurd comparison:",
+    "setting outdoor",
+    "could say.",
     "punchline:",
     "actually:",
     "that uses ",
+    "then undercut",
     "drafting",
     "we can adapt",
     "we can use",
+    "so we can",
     "first option",
     "that's a ",
     "could say ",
@@ -109,17 +131,46 @@ _DRAFTING_MARKERS = (
     "punchline could",
     "could add flavor",
     "let's think",
+    "let's adjust",
     "is deadpan",
     "must include color",
     "also uses \"",
+    "then undercut",
+    "but need to match",
+    "but need to tie",
+    "uses late action",
+    "uses early action",
+    "then punchline:",
+    "foliage implied",
+    "setting: indoor",
+    "setting: outdoor",
+    "actions: early",
+    "actions: late",
 )
 
-# NOTE: "in" is deliberately excluded — phrasal-verb endings like
-# "soaking it all in." or "clocking in." are legitimate caption tails.
+# NOTE: excluded on purpose — legitimate caption tails exist for "in"
+# ("soaking it all in."), "with" ("a force to be reckoned with."), "at"
+# ("where it's at."), "her"/"his" (object/possessive pronouns), "is"
+# ("that's just how it is."), "then" ("every now and then.").
 _FRAGMENT_TAIL_RE = re.compile(
-    r"\b(?:the|and|to|a|an|or|but|like)\.?$",
+    r"\b(?:the|and|to|a|an|or|but|like|its|their|of|from|as)\.?$",
     re.IGNORECASE,
 )
+
+# Single-word evaluative sentences the model appends after judging its own
+# draft, e.g. '"...caption..." Hmm.' or 'Punchline: absurd suggestions. Good.'
+# Kept minimal: words like "Nice."/"Perfect." can be legit deadpan sarcasm.
+_EVALUATIVE_TAILS = frozenset({"hmm", "good", "that works", "also", "that"})
+# Same idea, but robust to a closing quote ending the previous sentence
+# (the sentence splitter can't split on '."<space>').
+_EVALUATIVE_TAIL_RE = re.compile(
+    r"[.!?][\"'”’]?\s+(?:hmm+|good|that works|also|that)\s*[.!?]?$",
+    re.IGNORECASE,
+)
+
+# A colon immediately followed by a period ("Let's adjust:.") only appears in
+# truncated planning notes.
+_COLON_PERIOD_RE = re.compile(r":\s*\.")
 _IN_THE_TAIL_RE = re.compile(r"\bin the\s*\.?$", re.IGNORECASE)
 
 _NUMBERED_PARAM_RE = re.compile(r"\w+\(\d+\)")
@@ -162,6 +213,8 @@ def is_drafting_junk(text: str) -> bool:
         return True
     if stripped.count('"') % 2 == 1:
         return True
+    if _COLON_PERIOD_RE.search(stripped):
+        return True
     checklist_tags = sum(
         1 for tag in ("(color)", "(action)", "(setting)", "(surface)", "(background)")
         if tag in lower
@@ -175,6 +228,10 @@ def is_drafting_junk(text: str) -> bool:
         # sentence, e.g. "it flies off, leaving the water to."
         if _FRAGMENT_TAIL_RE.search(tail_words):
             return True
+        if tail_words in _EVALUATIVE_TAILS:
+            return True
+    if _EVALUATIVE_TAIL_RE.search(stripped):
+        return True
     if len(parts) >= 2 and len(parts[-1].split()) <= 3:
         tail = parts[-1].lower()
         if tail.startswith(("the ", "and ", "but ", "or ", "a ", "an ")):
@@ -262,6 +319,31 @@ def _json_caption_candidate(text: str) -> str | None:
     return None
 
 
+_QUOTED_SPAN_RE = re.compile(r'"([^"]{40,400})"')
+
+
+def _quoted_span_candidates(text: str) -> list[str]:
+    """Full captions the model quoted inside its own drafting notes.
+
+    Leaks like 'Let\'s refine: "Ginger kitten sits ..." That uses.' usually
+    contain the finished caption verbatim between double quotes. Only spans
+    that look like complete sentences (start uppercase, end with terminal
+    punctuation) are returned, longest first.
+    """
+    spans = []
+    for match in _QUOTED_SPAN_RE.finditer(text):
+        span = match.group(1).strip()
+        if not span or not span[0].isupper():
+            continue
+        if span[-1] not in ".!?":
+            continue
+        if len(span.split()) < 8:
+            continue
+        spans.append(span)
+    spans.sort(key=lambda s: len(s.split()), reverse=True)
+    return spans
+
+
 def iter_salvage_candidates(raw: str) -> list[str]:
     """Ordered candidates from raw model output (cheapest heuristics first)."""
     text = raw.strip()
@@ -281,6 +363,8 @@ def iter_salvage_candidates(raw: str) -> list[str]:
         ordered.append(norm)
 
     add(_json_caption_candidate(text))
+    for span in _quoted_span_candidates(text):
+        add(span)
     add(_strip_label_prefix(text))
     add(_strip_meta_lines(text))
     for block in _paragraph_tails(text):
