@@ -65,6 +65,25 @@ _DRAFTING_PREFIXES = (
     "final:",
     "then it adds",
     "mention ",
+    "but must ",
+    "but check",
+    "but does it",
+    "but we also",
+    "we need ",
+    "then punchline",
+    "not necessary",
+    "let's think",
+    "also \"",
+    "also uses",
+    "metaphor:",
+    "shape:",
+    "tone:",
+    "idea:",
+    "note:",
+    "draft:",
+    "option:",
+    "hook:",
+    "concept:",
 )
 
 _DRAFTING_MARKERS = (
@@ -78,8 +97,7 @@ _DRAFTING_MARKERS = (
     "[later action",
     "let me count:",
     "is dev reference",
-    "merge conflict",
-    "might work",
+    '"merge conflict" is',
     "keep it natural",
     "first sentence",
     "second sentence",
@@ -88,10 +106,18 @@ _DRAFTING_MARKERS = (
     "also mention",
     "types might not",
     "might not be accurate",
+    "punchline could",
+    "could add flavor",
+    "let's think",
+    "is deadpan",
+    "must include color",
+    "also uses \"",
 )
 
+# NOTE: "in" is deliberately excluded — phrasal-verb endings like
+# "soaking it all in." or "clocking in." are legitimate caption tails.
 _FRAGMENT_TAIL_RE = re.compile(
-    r"\b(?:the|and|in|to|a|an|or|but|like)\.?$",
+    r"\b(?:the|and|to|a|an|or|but|like)\.?$",
     re.IGNORECASE,
 )
 _IN_THE_TAIL_RE = re.compile(r"\bin the\s*\.?$", re.IGNORECASE)
@@ -145,7 +171,9 @@ def is_drafting_junk(text: str) -> bool:
     parts = _sentence_parts(stripped)
     if parts:
         tail_words = parts[-1].lower().strip().rstrip(".!?")
-        if _FRAGMENT_TAIL_RE.match(tail_words):
+        # search (not match): catches truncations anywhere in the final
+        # sentence, e.g. "it flies off, leaving the water to."
+        if _FRAGMENT_TAIL_RE.search(tail_words):
             return True
     if len(parts) >= 2 and len(parts[-1].split()) <= 3:
         tail = parts[-1].lower()

@@ -687,7 +687,12 @@ def _google_vision_describe_call(
     from google.genai import types
 
     system_prompt = load_prompt(_describe_prompt_name())
-    client = genai.Client(api_key=_google_api_key())
+    # Bound hung requests: a stalled Google call must fail fast into the M3 fallback.
+    timeout_ms = int(get_float_env("GOOGLE_API_TIMEOUT_S", 60.0) * 1000)
+    client = genai.Client(
+        api_key=_google_api_key(),
+        http_options=types.HttpOptions(timeout=timeout_ms),
+    )
     model_id = _resolve_google_model_id(model)
 
     parts: list[types.Part] = [

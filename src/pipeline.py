@@ -311,7 +311,23 @@ def _describe_with_fallback(
     model: str,
     task_id: str,
     frames: list[bytes],
+    skip_primary: bool = False,
 ) -> DescribeResult:
+    fallback = _vision_fallback_model()
+
+    if skip_primary and fallback and fallback != model:
+        log_human(f"  {task_id}: deadline guard active, describing with {fallback}")
+        fallback_client = resolve_llm_client(fallback, fallback=client)
+        result = _describe_frames(
+            client=fallback_client,
+            model=fallback,
+            task_id=task_id,
+            frames=frames,
+        )
+        if result.ok:
+            return result
+        # Fallback itself failed; fall through to the primary as a last resort.
+
     result = _describe_frames(
         client=client,
         model=model,
@@ -321,8 +337,7 @@ def _describe_with_fallback(
     if result.ok:
         return result
 
-    fallback = _vision_fallback_model()
-    if not fallback or fallback == model:
+    if not fallback or fallback == model or skip_primary:
         return result
 
     log_human(
@@ -372,14 +387,15 @@ def _prepare_clip_frames(
         td.cleanup()
     download_s = time.perf_counter() - t_dl
 
-    next_url = _next_prefetch_url(
-        tasks,
-        task_index,
-        descriptions_cache=ctx.descriptions_cache,
-        dry_run=ctx.dry_run,
+    prefetch.schedule_many(
+        _next_prefetch_urls(
+            tasks,
+            task_index,
+            descriptions_cache=ctx.descriptions_cache,
+            dry_run=ctx.dry_run,
+            depth=prefetch.depth,
+        )
     )
-    if next_url:
-        prefetch.schedule(next_url)
 
     return _PreparedClip(
         task_id=task_id,
@@ -414,6 +430,9 @@ def _prepare_and_describe(
         model=vision_model,
         task_id=prep.task_id,
         frames=prep.frames,
+        skip_primary=ctx.should_skip_primary_describe(
+            remaining_clips=len(tasks) - task_index,
+        ),
     )
     log_human(f"  {prep.task_id}: describe done in {time.perf_counter() - t0:.1f}s")
     return prep, describe
@@ -509,13 +528,15 @@ def _task_needs_video_download(
     return video_url
 
 
-def _next_prefetch_url(
+def _next_prefetch_urls(
     tasks: list[dict],
     after_index: int,
     *,
     descriptions_cache: dict[str, str],
     dry_run: bool,
-) -> str | None:
+    depth: int,
+) -> list[str]:
+    urls: list[str] = []
     for j in range(after_index + 1, len(tasks)):
         url = _task_needs_video_download(
             tasks[j],
@@ -523,39 +544,54 @@ def _next_prefetch_url(
             dry_run=dry_run,
         )
         if url:
-            return url
-    return None
+            urls.append(url)
+            if len(urls) >= depth:
+                break
+    return urls
 
 
 class _ClipPrefetch:
-    """Download the next clip in a background thread while the current one is processed."""
+    """Download upcoming clips in background threads while the current one is processed.
 
-    def __init__(self) -> None:
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="clip-prefetch")
-        self._future: Future[None] | None = None
-        self._td: tempfile.TemporaryDirectory[str] | None = None
-        self._path: Path | None = None
-        self._url: str | None = None
+    Downloads stream to temp files on disk, so memory stays flat regardless of
+    clip size; only PREFETCH_DEPTH temp files exist at once.
+    """
+
+    def __init__(self, depth: int | None = None) -> None:
+        self._depth = max(depth if depth is not None else get_int_env("PREFETCH_DEPTH", 2), 1)
+        self._executor = ThreadPoolExecutor(
+            max_workers=self._depth, thread_name_prefix="clip-prefetch"
+        )
+        self._pending: dict[
+            str, tuple[tempfile.TemporaryDirectory[str], Path, Future[None]]
+        ] = {}
+
+    @property
+    def depth(self) -> int:
+        return self._depth
 
     def schedule(self, video_url: str) -> None:
-        self._cancel_pending()
-        self._td = tempfile.TemporaryDirectory()
-        self._path = Path(self._td.name) / "clip.mp4"
-        self._url = video_url
-        path = self._path
-        self._future = self._executor.submit(download_video, video_url, path)
+        if video_url in self._pending or len(self._pending) >= self._depth:
+            return
+        td = tempfile.TemporaryDirectory()
+        path = Path(td.name) / "clip.mp4"
+        future = self._executor.submit(download_video, video_url, path)
+        self._pending[video_url] = (td, path, future)
+
+    def schedule_many(self, video_urls: list[str]) -> None:
+        for url in video_urls:
+            self.schedule(url)
 
     def take(self, video_url: str) -> tuple[tempfile.TemporaryDirectory[str], Path]:
-        if self._future is not None and self._url == video_url:
-            self._future.result()
-            self._future = None
-            td, path = self._td, self._path
-            self._td = None
-            self._path = None
-            self._url = None
-            if td is None or path is None:
-                raise RuntimeError("prefetch state missing after completed download")
-            return td, path
+        entry = self._pending.pop(video_url, None)
+        if entry is not None:
+            td, path, future = entry
+            try:
+                future.result()
+                return td, path
+            except Exception:
+                # Prefetch failed (transient network error); retry inline below.
+                td.cleanup()
 
         td = tempfile.TemporaryDirectory()
         path = Path(td.name) / "clip.mp4"
@@ -563,14 +599,13 @@ class _ClipPrefetch:
         return td, path
 
     def _cancel_pending(self) -> None:
-        if self._future is not None:
-            self._future.cancel()
-            self._future = None
-        if self._td is not None:
-            self._td.cleanup()
-            self._td = None
-        self._path = None
-        self._url = None
+        for td, _path, future in self._pending.values():
+            future.cancel()
+            try:
+                td.cleanup()
+            except OSError:
+                pass
+        self._pending.clear()
 
     def close(self) -> None:
         self._cancel_pending()
@@ -594,6 +629,22 @@ class _RunContext:
     vision_model: str | None
     caption_model: str | None
     descriptions_cache_label: str | None = None
+    run_start: float = 0.0
+    time_budget_s: float = 0.0
+    deadline_reserve_s: float = 30.0
+
+    def should_skip_primary_describe(self, *, remaining_clips: int) -> bool:
+        """True when the remaining budget only covers fast fallback describes.
+
+        Guards against slow-Gemma runs blowing the container time limit: once
+        elapsed time leaves less than reserve x remaining clips, remaining
+        describes go straight to the fallback model.
+        """
+        if self.time_budget_s <= 0 or not _vision_fallback_model():
+            return False
+        elapsed = time.monotonic() - self.run_start
+        remaining_budget = self.time_budget_s - elapsed
+        return remaining_budget < remaining_clips * self.deadline_reserve_s
 
 
 def _build_run_context(
@@ -625,6 +676,9 @@ def _build_run_context(
         vision_model=vision_model,
         caption_model=caption_model,
         descriptions_cache_label=cache_label,
+        run_start=time.monotonic(),
+        time_budget_s=get_float_env("TIME_BUDGET_S", 0.0),
+        deadline_reserve_s=get_float_env("DEADLINE_RESERVE_S", 30.0),
     )
 
 
@@ -638,7 +692,8 @@ def _log_config(ctx: _RunContext) -> None:
         f"frame_count_min={os.environ.get('FRAME_COUNT_MIN', '8')} "
         f"frame_count_max={os.environ.get('FRAME_COUNT_MAX', '24')} "
         f"api_timeout_s={os.environ.get('API_TIMEOUT_S', '45')} "
-        f"vision_fallback={_vision_fallback_model() or 'none'}",
+        f"vision_fallback={_vision_fallback_model() or 'none'} "
+        f"time_budget_s={ctx.time_budget_s or 'off'}",
     )
     emit_config_event(
         vision=ctx.vision_model,
@@ -878,14 +933,15 @@ def _process_task(
         if cached_description:
             log_human(f"  {task_id}: using cached description")
             describe = DescribeResult(text=cached_description, error=None)
-            next_url = _next_prefetch_url(
-                tasks,
-                task_index,
-                descriptions_cache=ctx.descriptions_cache,
-                dry_run=ctx.dry_run,
+            prefetch.schedule_many(
+                _next_prefetch_urls(
+                    tasks,
+                    task_index,
+                    descriptions_cache=ctx.descriptions_cache,
+                    dry_run=ctx.dry_run,
+                    depth=prefetch.depth,
+                )
             )
-            if next_url:
-                prefetch.schedule(next_url)
         else:
             t_dl = time.perf_counter()
             td, video_path = prefetch.take(video_url)
@@ -902,14 +958,15 @@ def _process_task(
                 td.cleanup()
             download_s = time.perf_counter() - t_dl
 
-            next_url = _next_prefetch_url(
-                tasks,
-                task_index,
-                descriptions_cache=ctx.descriptions_cache,
-                dry_run=ctx.dry_run,
+            prefetch.schedule_many(
+                _next_prefetch_urls(
+                    tasks,
+                    task_index,
+                    descriptions_cache=ctx.descriptions_cache,
+                    dry_run=ctx.dry_run,
+                    depth=prefetch.depth,
+                )
             )
-            if next_url:
-                prefetch.schedule(next_url)
 
             t0 = time.perf_counter()
             log_human(f"  {task_id}: describing...")
@@ -918,6 +975,9 @@ def _process_task(
                 model=ctx.vision_model,
                 task_id=task_id,
                 frames=frames,
+                skip_primary=ctx.should_skip_primary_describe(
+                    remaining_clips=len(tasks) - task_index,
+                ),
             )
             describe_s = time.perf_counter() - t0
 
