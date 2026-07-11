@@ -69,6 +69,7 @@ def test_pipelined_judge_retries_failed_style(tmp_path, monkeypatch):
         run_start=time.monotonic(),
         time_budget_s=540.0,
         total_clips=1,
+        judge_client=MagicMock(),
     )
 
     with patch("src.judge_retry.judge_clip_call", return_value=clip):

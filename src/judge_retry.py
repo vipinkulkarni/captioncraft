@@ -90,6 +90,7 @@ class PipelinedJudgeRetry:
         run_start: float,
         time_budget_s: float,
         total_clips: int,
+        judge_client: OpenAI | None = None,
     ) -> None:
         self._results = results
         self._results_path = results_path
@@ -102,7 +103,7 @@ class PipelinedJudgeRetry:
         self._lock = threading.Lock()
         self._retries_done = 0
         self._logged_estimate = False
-        self._judge_client = get_fireworks_client()
+        self._judge_client = judge_client
         self._judge_model = _resolve_judge_model()
         self._min_score = get_int_env("JUDGE_MIN_SCORE", 3)
         self._reserve_s = get_float_env("JUDGE_RETRY_RESERVE_S", 18.0)
@@ -112,6 +113,11 @@ class PipelinedJudgeRetry:
         self._parallel_styles = get_int_env("JUDGE_PARALLEL_STYLES", 1) == 1
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="judge-retry")
         self._futures: list[Future[None]] = []
+
+    def _get_judge_client(self) -> OpenAI:
+        if self._judge_client is None:
+            self._judge_client = get_fireworks_client()
+        return self._judge_client
 
     def remaining_s(self) -> float:
         if self._time_budget_s <= 0:
@@ -164,7 +170,7 @@ class PipelinedJudgeRetry:
             captions = {}
 
         clip = judge_clip_call(
-            client=self._judge_client,
+            client=self._get_judge_client(),
             model=self._judge_model,
             task_id=task_id,
             captions={str(k): str(v) for k, v in captions.items()},
