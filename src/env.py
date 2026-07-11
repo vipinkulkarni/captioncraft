@@ -27,9 +27,15 @@ def resolve_frame_count(duration_s: float) -> int:
     if fixed:
         return max(int(fixed), 1)
 
-    interval_s = max(get_float_env("FRAME_INTERVAL_S", 4.0), 0.5)
-    min_frames = max(get_int_env("FRAME_COUNT_MIN", 8), 1)
-    max_frames = max(get_int_env("FRAME_COUNT_MAX", 24), min_frames)
+    long_threshold = get_float_env("FRAME_LONG_DURATION_S", 60.0)
+    if duration_s >= long_threshold:
+        interval_s = max(get_float_env("FRAME_LONG_INTERVAL_S", 3.0), 0.5)
+        min_frames = max(get_int_env("FRAME_LONG_COUNT_MIN", 12), 1)
+        max_frames = max(get_int_env("FRAME_LONG_COUNT_MAX", 28), min_frames)
+    else:
+        interval_s = max(get_float_env("FRAME_INTERVAL_S", 4.0), 0.5)
+        min_frames = max(get_int_env("FRAME_COUNT_MIN", 8), 1)
+        max_frames = max(get_int_env("FRAME_COUNT_MAX", 24), min_frames)
 
     if duration_s <= 0:
         return min_frames

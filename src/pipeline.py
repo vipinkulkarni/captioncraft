@@ -28,6 +28,7 @@ from src.caption import (
 )
 from src.caption_selector import generate_best_of_n_caption
 from src.describe_schema import parse_describe_json
+from src.describe_quality import describe_quality_issue
 from src.env import get_float_env, get_frame_config, get_int_env, resolve_frame_count
 from src.results import DescribeResult, ProcessError, describe_error_from_reason
 from src.retry import RetryPolicy, call_with_retry
@@ -131,6 +132,7 @@ def extract_frames_jpeg(
     *,
     max_frames: int | None = None,
     width: int = 512,
+    duration_hint_s: float = 0.0,
 ) -> tuple[list[bytes], float]:
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -139,8 +141,9 @@ def extract_frames_jpeg(
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
     duration_s = frame_count / fps if frame_count > 0 and fps > 0 else 0.0
+    effective_duration = max(duration_s, max(duration_hint_s, 0.0))
     if max_frames is None:
-        max_frames = resolve_frame_count(duration_s)
+        max_frames = resolve_frame_count(effective_duration)
 
     frames: list[bytes] = []
     indices = _frame_indices(frame_count, max_frames)
@@ -152,7 +155,7 @@ def extract_frames_jpeg(
                 continue
             frames.append(_encode_frame_jpeg(frame, width))
     else:
-        times_ms = _frame_times_ms(duration_s, max_frames)
+        times_ms = _frame_times_ms(effective_duration, max_frames)
         if times_ms:
             for ms in times_ms:
                 cap.set(cv2.CAP_PROP_POS_MSEC, ms)
@@ -172,7 +175,7 @@ def extract_frames_jpeg(
     if not frames:
         raise RuntimeError("No frames extracted from video")
 
-    return frames, duration_s
+    return frames, max(duration_s, max(duration_hint_s, 0.0))
 
 
 @dataclass
@@ -183,7 +186,12 @@ class _DescribeAttempt:
     error: str | None = None
 
 
-def _describe_output_issue(text: str, finish_reason: str | None) -> str | None:
+def _describe_output_issue(
+    text: str,
+    finish_reason: str | None,
+    *,
+    duration_s: float = 0.0,
+) -> str | None:
     if not text.strip():
         return "EmptyResponse"
     if structured_describe_enabled():
@@ -192,6 +200,9 @@ def _describe_output_issue(text: str, finish_reason: str | None) -> str | None:
         ok, reason, _formatted = parse_describe_json(text)
         if not ok:
             return reason or "InvalidJSON"
+        quality_issue = describe_quality_issue(text, duration_s=duration_s)
+        if quality_issue:
+            return quality_issue
         return None
     if looks_truncated(text, finish_reason):
         return "Truncated" if text else "EmptyResponse"
@@ -220,7 +231,20 @@ def _describe_max_attempts() -> int:
 
 
 def _describe_no_retry_reasons() -> frozenset[str]:
-    return frozenset({"ReadTimeout", "APITimeoutError", "Timeout"})
+    return frozenset(
+        {
+            "ReadTimeout",
+            "APITimeoutError",
+            "Timeout",
+            "ServerError",
+            "InternalServerError",
+        }
+    )
+
+
+def _should_skip_primary_for_duration(duration_s: float) -> bool:
+    threshold = get_float_env("DESCRIBE_LONG_SKIP_PRIMARY_S", 0.0)
+    return threshold > 0 and duration_s >= threshold
 
 
 def _describe_frames(
@@ -229,6 +253,7 @@ def _describe_frames(
     model: str,
     task_id: str,
     frames: list[bytes],
+    duration_s: float = 0.0,
 ) -> DescribeResult:
     base_max = max(get_int_env("DESCRIBE_MAX_TOKENS", 1200), 64)
     temperature = get_float_env("DESCRIBE_TEMPERATURE", 0.2)
@@ -267,7 +292,11 @@ def _describe_frames(
     def classify(attempt: int, result: _DescribeAttempt) -> str | None:
         if result.error:
             return result.error
-        issue = _describe_output_issue(result.text, result.finish_reason)
+        issue = _describe_output_issue(
+            result.text,
+            result.finish_reason,
+            duration_s=duration_s,
+        )
         if issue is None:
             if attempt > 1:
                 log_human(
@@ -337,17 +366,27 @@ def _describe_with_fallback(
     task_id: str,
     frames: list[bytes],
     skip_primary: bool = False,
+    duration_s: float = 0.0,
 ) -> DescribeResult:
     fallback = _vision_fallback_model()
+    deadline_skip = skip_primary
+    long_skip = _should_skip_primary_for_duration(duration_s)
+    skip_primary = deadline_skip or long_skip
 
     if skip_primary and fallback and fallback != model:
-        log_human(f"  {task_id}: deadline guard active, describing with {fallback}")
+        guard = (
+            "deadline guard active"
+            if deadline_skip
+            else f"long clip ({duration_s:.0f}s)"
+        )
+        log_human(f"  {task_id}: {guard}, describing with {fallback}")
         fallback_client = resolve_llm_client(fallback, fallback=client)
         result = _describe_frames(
             client=fallback_client,
             model=fallback,
             task_id=task_id,
             frames=frames,
+            duration_s=duration_s,
         )
         if result.ok:
             return result
@@ -358,6 +397,7 @@ def _describe_with_fallback(
         model=model,
         task_id=task_id,
         frames=frames,
+        duration_s=duration_s,
     )
     if result.ok:
         return result
@@ -375,10 +415,19 @@ def _describe_with_fallback(
         model=fallback,
         task_id=task_id,
         frames=frames,
+        duration_s=duration_s,
     )
     if fallback_result.ok:
         return fallback_result
     return result
+
+
+def _task_duration_hint(task: dict) -> float:
+    meta = task.get("meta") or {}
+    try:
+        return max(float(meta.get("duration_s") or 0.0), 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 @dataclass
@@ -402,11 +451,17 @@ def _prepare_clip_frames(
     video_url = str(task.get("video_url", ""))
     t_dl = time.perf_counter()
     td, video_path = prefetch.take(video_url)
+    duration_hint = _task_duration_hint(task)
     try:
         log_human(f"  {task_id}: extracting frames...")
-        frames, duration_s = extract_frames_jpeg(video_path, width=ctx.frame_width)
+        frames, duration_s = extract_frames_jpeg(
+            video_path,
+            width=ctx.frame_width,
+            duration_hint_s=duration_hint,
+        )
+        effective_duration = max(duration_s, duration_hint)
         log_human(
-            f"  {task_id}: extracted {len(frames)} frames (duration={duration_s:.1f}s)",
+            f"  {task_id}: extracted {len(frames)} frames (duration={effective_duration:.1f}s)",
         )
     finally:
         td.cleanup()
@@ -426,7 +481,7 @@ def _prepare_clip_frames(
         task_id=task_id,
         frames=frames,
         frames_count=len(frames),
-        video_duration_s=duration_s,
+        video_duration_s=effective_duration,
         download_s=download_s,
     )
 
@@ -458,6 +513,7 @@ def _prepare_and_describe(
         skip_primary=ctx.should_skip_primary_describe(
             remaining_clips=len(tasks) - task_index,
         ),
+        duration_s=prep.video_duration_s,
     )
     log_human(f"  {prep.task_id}: describe done in {time.perf_counter() - t0:.1f}s")
     return prep, describe
@@ -986,14 +1042,19 @@ def _process_task(
         else:
             t_dl = time.perf_counter()
             td, video_path = prefetch.take(video_url)
+            duration_hint = _task_duration_hint(task)
             try:
                 log_human(f"  {task_id}: extracting frames...")
-                frames, duration_s = extract_frames_jpeg(video_path, width=ctx.frame_width)
+                frames, duration_s = extract_frames_jpeg(
+                    video_path,
+                    width=ctx.frame_width,
+                    duration_hint_s=duration_hint,
+                )
                 frames_count = len(frames)
-                video_duration_s = duration_s
+                video_duration_s = max(duration_s, duration_hint)
                 log_human(
                     f"  {task_id}: extracted {frames_count} frames "
-                    f"(duration={duration_s:.1f}s)",
+                    f"(duration={video_duration_s:.1f}s)",
                 )
             finally:
                 td.cleanup()
@@ -1019,6 +1080,7 @@ def _process_task(
                 skip_primary=ctx.should_skip_primary_describe(
                     remaining_clips=len(tasks) - task_index,
                 ),
+                duration_s=video_duration_s,
             )
             describe_s = time.perf_counter() - t0
 

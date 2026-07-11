@@ -152,3 +152,17 @@ def parse_describe_json(raw: str) -> tuple[bool, str, str]:
     if not ok or description is None:
         return False, reason or "InvalidJSON", ""
     return True, "", description.to_style_context()
+
+
+def parse_video_description(raw: str) -> tuple[bool, str, VideoDescription | None]:
+    """Return (ok, failure_reason, parsed description object)."""
+    text = _extract_json_object(raw)
+    if not text:
+        return False, "EmptyResponse", None
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return False, "InvalidJSON", None
+
+    return _validate_payload(data)
