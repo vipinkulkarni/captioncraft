@@ -470,6 +470,7 @@ def _caption_styles_from_description(
     describe: DescribeResult,
     requested_styles: list[str],
     parallel: bool,
+    task_id: str = "tiebreak",
 ) -> tuple[dict[str, str], dict[str, int]]:
     captions: dict[str, str] = {}
     style_attempts: dict[str, int] = {}
@@ -495,6 +496,7 @@ def _caption_styles_from_description(
                     models=pool,
                     style=style,
                     description=describe.text or "",
+                    task_id=task_id,
                 )
                 return style, candidate.text, candidate.result.attempts
             caption_result = generate_styled_caption_from_text(
@@ -820,6 +822,7 @@ def _finish_task_caption(
             describe=describe,
             requested_styles=requested_styles,
             parallel=ctx.parallel_styles,
+            task_id=task_id,
         )
         caption_s = time.perf_counter() - t1
         log_human(
@@ -1028,6 +1031,7 @@ def _process_task(
             describe=describe,
             requested_styles=requested_styles,
             parallel=ctx.parallel_styles,
+            task_id=task_id,
         )
         caption_s = time.perf_counter() - t1
         log_human(

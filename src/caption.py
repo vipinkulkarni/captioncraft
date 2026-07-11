@@ -132,14 +132,25 @@ _META_LEAK_RETRY_NUDGE = (
     "no mention of rules, the user, or your task."
 )
 
+_DIVERSITY_RETRY_NUDGE = (
+    "Write a fresh variant: keep the same scene facts but change wording and humor angle."
+)
 
-def _build_style_user_prompt(description: str, *, meta_leak_retry: bool = False) -> str:
+
+def _build_style_user_prompt(
+    description: str,
+    *,
+    meta_leak_retry: bool = False,
+    diversity_retry: bool = False,
+) -> str:
     if structured_describe_enabled():
         prompt = f"{_STYLE_STRUCTURED_HINT}\n\nScene facts:\n{description}"
     else:
         prompt = f"Scene facts:\n{description}"
     if meta_leak_retry:
         prompt = f"{prompt}\n\n{_META_LEAK_RETRY_NUDGE}"
+    if diversity_retry:
+        prompt = f"{prompt}\n\n{_DIVERSITY_RETRY_NUDGE}"
     return prompt
 
 
@@ -399,6 +410,8 @@ def generate_styled_caption_from_text(
     model: str,
     style: str,
     description: str,
+    temperature_override: float | None = None,
+    diversity_retry: bool = False,
 ) -> CaptionResult:
     """Generate one styled caption from a factual description.
 
@@ -407,7 +420,10 @@ def generate_styled_caption_from_text(
     """
     system_prompt = load_prompt(style)
     base_max = max(get_int_env("STYLE_MAX_TOKENS", get_int_env("MAX_TOKENS", 140)), 32)
-    base_temp = _STYLE_TEMPERATURE.get(style, get_float_env("TEMPERATURE", 0.75))
+    if temperature_override is not None:
+        base_temp = temperature_override
+    else:
+        base_temp = _STYLE_TEMPERATURE.get(style, get_float_env("TEMPERATURE", 0.75))
     policy = RetryPolicy(
         max_attempts=max(get_int_env("STYLE_MAX_ATTEMPTS", 3), 1),
         base_sleep_s=1.0,
@@ -425,6 +441,7 @@ def generate_styled_caption_from_text(
         user_prompt = _build_style_user_prompt(
             description,
             meta_leak_retry=meta_leak_retry,
+            diversity_retry=diversity_retry,
         )
         if json_mode:
             user_prompt = (

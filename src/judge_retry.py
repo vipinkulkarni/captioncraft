@@ -84,7 +84,10 @@ def _regenerate_style_caption(
     model: str,
     style: str,
     description: str,
+    task_id: str = "",
 ) -> str:
+    diversity = get_int_env("JUDGE_RETRY_DIVERSITY", 1) == 1
+    retry_temp = get_float_env("JUDGE_RETRY_TEMPERATURE", 0.92) if diversity else None
     pool = resolve_caption_model_pool()
     if len(pool) > 1:
         candidate = generate_best_of_n_caption(
@@ -92,6 +95,8 @@ def _regenerate_style_caption(
             models=pool,
             style=style,
             description=description,
+            diversity_retry=diversity,
+            task_id=task_id or "retry",
         )
         return candidate.text
     result = generate_styled_caption_from_text(
@@ -99,6 +104,8 @@ def _regenerate_style_caption(
         model=model,
         style=style,
         description=description,
+        temperature_override=retry_temp,
+        diversity_retry=diversity,
     )
     return public_caption_result(result, style=style)
 
@@ -231,6 +238,7 @@ class PipelinedJudgeRetry:
                 model=self._caption_model,
                 style=style,
                 description=description,
+                task_id=task_id,
             )
             with self._lock:
                 caps = result.get("captions")

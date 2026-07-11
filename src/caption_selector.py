@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
@@ -13,6 +14,7 @@ from src.caption import (
     generate_styled_caption_from_text,
     public_caption_result,
 )
+from src.env import get_int_env
 from src.results import CaptionResult
 from src.scoring import score_caption
 from src.caption_grounding import grounding_bonus
@@ -72,13 +74,56 @@ def rank_caption(
     return penalties.get(reason, 10), reason
 
 
-def select_best_candidate(candidates: list[CaptionCandidate]) -> CaptionCandidate | None:
+def select_best_candidate(
+    candidates: list[CaptionCandidate],
+    *,
+    style: str = "",
+    description: str | None = None,
+    client: OpenAI | None = None,
+    task_id: str = "tiebreak",
+) -> CaptionCandidate | None:
     if not candidates:
         return None
-    return max(
+    ranked = sorted(
         candidates,
         key=lambda c: (c.score_rank, c.result.ok, len(c.text.split())),
+        reverse=True,
     )
+    best = ranked[0]
+    if (
+        len(ranked) < 2
+        or get_int_env("CAPTION_JUDGE_TIEBREAK", 0) != 1
+        or not description
+        or not client
+        or not style
+    ):
+        return best
+
+    margin = get_int_env("CAPTION_TIEBREAK_MARGIN", 8)
+    runner_up = ranked[1]
+    if best.score_rank - runner_up.score_rank > margin:
+        return best
+    if best.score_rank < 100 or runner_up.score_rank < 100:
+        return best
+
+    judge_model = os.environ.get(
+        "JUDGE_MODEL",
+        os.environ.get("CAPTION_MODEL", "accounts/fireworks/models/deepseek-v4-flash"),
+    )
+    from src.llm_judge import judge_tiebreak_pick
+
+    pick = judge_tiebreak_pick(
+        client=client,
+        model=judge_model,
+        task_id=task_id,
+        style=style,
+        description=description,
+        left_caption=best.text,
+        right_caption=runner_up.text,
+    )
+    if pick == 1:
+        return runner_up
+    return best
 
 
 def generate_candidate(
@@ -88,12 +133,16 @@ def generate_candidate(
     label: str,
     style: str,
     description: str,
+    diversity_retry: bool = False,
+    temperature_override: float | None = None,
 ) -> CaptionCandidate:
     result = generate_styled_caption_from_text(
         client=client,
         model=model,
         style=style,
         description=description,
+        diversity_retry=diversity_retry,
+        temperature_override=temperature_override,
     )
     text = public_caption_result(result, style=style)
     rank, reason = rank_caption(text, style, description=description)
@@ -114,6 +163,8 @@ def generate_best_of_n_caption(
     style: str,
     description: str,
     parallel: bool = True,
+    diversity_retry: bool = False,
+    task_id: str = "tiebreak",
 ) -> CaptionCandidate:
     if style not in STYLES:
         raise ValueError(f"unsupported style: {style}")
@@ -126,6 +177,7 @@ def generate_best_of_n_caption(
             label=models[0][0],
             style=style,
             description=description,
+            diversity_retry=diversity_retry,
         )
 
     candidates: list[CaptionCandidate] = []
@@ -138,6 +190,7 @@ def generate_best_of_n_caption(
             label=label,
             style=style,
             description=description,
+            diversity_retry=diversity_retry,
         )
 
     if parallel:
@@ -149,6 +202,12 @@ def generate_best_of_n_caption(
         for entry in models:
             candidates.append(_one(entry))
 
-    best = select_best_candidate(candidates)
+    best = select_best_candidate(
+        candidates,
+        style=style,
+        description=description,
+        client=client,
+        task_id=task_id,
+    )
     assert best is not None
     return best

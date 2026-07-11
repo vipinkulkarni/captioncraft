@@ -1,6 +1,10 @@
 """Tests for description-aware caption grounding score."""
 
-from src.caption_grounding import extract_description_anchors, grounding_bonus
+from src.caption_grounding import (
+    extract_action_verbs,
+    extract_description_anchors,
+    grounding_bonus,
+)
 from src.caption_selector import rank_caption, select_best_candidate, CaptionCandidate
 from src.results import CaptionResult
 
@@ -75,4 +79,20 @@ class TestCaptionGrounding:
             "The ginger kitten walks on dirt among foliage.",
         )
         assert bonus > 0
-        assert reason.startswith("grounding=")
+        assert "grounding=" in reason
+
+    def test_action_verbs_boost_grounded_caption(self):
+        verbs = extract_action_verbs(SAMPLE_CONTEXT)
+        assert "sits" in verbs or "walks" in verbs
+        grounded = (
+            "The ginger kitten sits alert among bushes in sunlight. "
+            "It walks forward across dirt toward the camera."
+        )
+        invented = (
+            "The ginger kitten flies over bushes in sunlight. "
+            "It swims forward across dirt toward the camera."
+        )
+        g_bonus, _ = grounding_bonus(SAMPLE_CONTEXT, grounded)
+        i_bonus, i_reason = grounding_bonus(SAMPLE_CONTEXT, invented)
+        assert g_bonus > i_bonus
+        assert "mismatch" in i_reason

@@ -1,5 +1,7 @@
 """Tests for best-of-N caption selection."""
 
+from unittest.mock import MagicMock, patch
+
 from src.caption_selector import CaptionCandidate, is_friendly_placeholder, rank_caption, select_best_candidate
 from src.results import CaptionResult
 
@@ -36,3 +38,43 @@ class TestCaptionSelector:
         best = select_best_candidate(candidates)
         assert best is not None
         assert best.label == "deepseek-v4-flash"
+
+    def test_tiebreak_uses_judge_when_scores_are_close(self, monkeypatch):
+        monkeypatch.setenv("CAPTION_JUDGE_TIEBREAK", "1")
+        monkeypatch.setenv("CAPTION_TIEBREAK_MARGIN", "8")
+        close_a = CaptionCandidate(
+            text=(
+                "Teal waves crash against dark rocks like an overworked dishwasher. "
+                "The foam still pretends it is going somewhere."
+            ),
+            model="a",
+            label="a",
+            result=CaptionResult(text="ok", error=None),
+            score_rank=108,
+            score_reason="ok",
+        )
+        close_b = CaptionCandidate(
+            text=(
+                "Dark rocks meet teal waves in a slow-motion argument. "
+                "The foam keeps auditioning for a travel brochure."
+            ),
+            model="b",
+            label="b",
+            result=CaptionResult(text="ok", error=None),
+            score_rank=105,
+            score_reason="ok",
+        )
+        with patch(
+            "src.llm_judge.judge_tiebreak_pick",
+            return_value=1,
+        ) as tiebreak:
+            best = select_best_candidate(
+                [close_a, close_b],
+                style="sarcastic",
+                description="Setting: rocky coast",
+                client=MagicMock(),
+                task_id="e01",
+            )
+        tiebreak.assert_called_once()
+        assert best is not None
+        assert best.label == "b"

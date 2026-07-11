@@ -7,6 +7,138 @@ import re
 
 from src.describe_schema import _extract_json_object, _validate_payload
 
+_ACTION_LINE_PREFIXES = (
+    "actions (early):",
+    "actions (late):",
+    "notable moments:",
+)
+
+_ACTION_VERB_HINTS = frozenset(
+    {
+        "sit",
+        "sits",
+        "sitting",
+        "stand",
+        "stands",
+        "standing",
+        "walk",
+        "walks",
+        "walking",
+        "run",
+        "runs",
+        "running",
+        "fly",
+        "flies",
+        "flying",
+        "swim",
+        "swims",
+        "swimming",
+        "preen",
+        "preens",
+        "preening",
+        "turn",
+        "turns",
+        "turning",
+        "look",
+        "looks",
+        "looking",
+        "gaze",
+        "gazes",
+        "gazing",
+        "type",
+        "types",
+        "typing",
+        "pan",
+        "pans",
+        "panning",
+        "move",
+        "moves",
+        "moving",
+        "hop",
+        "hops",
+        "hopping",
+        "jump",
+        "jumps",
+        "jumping",
+        "eat",
+        "eats",
+        "eating",
+        "drink",
+        "drinks",
+        "drinking",
+        "splash",
+        "splashes",
+        "splashing",
+        "crash",
+        "crashes",
+        "crashing",
+        "slide",
+        "slides",
+        "sliding",
+        "crouch",
+        "crouches",
+        "crouching",
+        "stretch",
+        "stretches",
+        "stretching",
+        "blink",
+        "blinks",
+        "blinking",
+        "wag",
+        "wags",
+        "wagging",
+        "perch",
+        "perches",
+        "perching",
+        "land",
+        "lands",
+        "landing",
+        "takeoff",
+        "depart",
+        "departs",
+        "departing",
+    }
+)
+
+
+def _action_text_chunks(description: str) -> list[str]:
+    chunks: list[str] = []
+    for line in description.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lower = stripped.lower()
+        for prefix in _ACTION_LINE_PREFIXES:
+            if lower.startswith(prefix):
+                chunks.append(stripped.split(":", 1)[-1])
+                break
+    return chunks
+
+
+def extract_action_verbs(description: str) -> set[str]:
+    """Pull likely action verbs from describe action lines."""
+    verbs: set[str] = set()
+    for chunk in _action_text_chunks(description):
+        for token in _tokenize(chunk):
+            if token in _ACTION_VERB_HINTS or token.endswith("ing"):
+                verbs.add(token)
+    return verbs
+
+
+def _action_coverage_bonus(desc_verbs: set[str], caption_tokens: set[str]) -> int:
+    if not desc_verbs:
+        return 0
+    matched = {v for v in desc_verbs if v in caption_tokens}
+    return int(round(len(matched) / len(desc_verbs) * 10))
+
+
+def _verb_mismatch_penalty(desc_verbs: set[str], caption_tokens: set[str]) -> int:
+    if not desc_verbs:
+        return 0
+    invented = {v for v in caption_tokens if v in _ACTION_VERB_HINTS and v not in desc_verbs}
+    return min(len(invented) * 3, 8)
+
+
 _STOPWORDS = frozenset(
     {
         "the",
@@ -105,7 +237,7 @@ def extract_description_anchors(description: str) -> set[str]:
 
 
 def grounding_bonus(description: str, caption: str) -> tuple[int, str]:
-    """Return 0–35 bonus points for covering describe anchors in the caption."""
+    """Return 0–35 bonus points for covering describe anchors and actions."""
     anchors = extract_description_anchors(description)
     if not anchors:
         return 0, "no-anchors"
@@ -116,10 +248,22 @@ def grounding_bonus(description: str, caption: str) -> tuple[int, str]:
 
     matched = {a for a in anchors if a in caption_tokens}
     coverage = len(matched) / len(anchors)
-    bonus = int(round(coverage * 25))
+    bonus = int(round(coverage * 20))
     if len(matched) >= 3:
         bonus += 5
     if len(matched) >= 5:
         bonus += 5
-    bonus = min(bonus, 35)
-    return bonus, f"grounding={len(matched)}/{len(anchors)}"
+
+    desc_verbs = extract_action_verbs(description)
+    action_bonus = _action_coverage_bonus(desc_verbs, caption_tokens)
+    mismatch_penalty = _verb_mismatch_penalty(desc_verbs, caption_tokens)
+    bonus += action_bonus - mismatch_penalty
+    bonus = max(0, min(bonus, 35))
+
+    parts = [f"grounding={len(matched)}/{len(anchors)}"]
+    if desc_verbs:
+        matched_verbs = len(desc_verbs & caption_tokens)
+        parts.append(f"actions={matched_verbs}/{len(desc_verbs)}")
+    if mismatch_penalty:
+        parts.append(f"mismatch=-{mismatch_penalty}")
+    return bonus, "+".join(parts)

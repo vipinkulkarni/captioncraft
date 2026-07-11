@@ -454,6 +454,53 @@ def _judge_single_style(
     return None, last_error
 
 
+def _judge_quality_total(score: CaptionJudgeScore) -> float:
+    return score.accuracy * 2.0 + score.specificity + score.style_fit
+
+
+def judge_tiebreak_pick(
+    *,
+    client: OpenAI,
+    model: str,
+    task_id: str,
+    style: str,
+    description: str,
+    left_caption: str,
+    right_caption: str,
+    temperature: float = 0.2,
+) -> int:
+    """Pick the better caption when regex ranks are close. Returns 0, 1, or -1 on failure."""
+    left_score, left_err = _judge_single_style(
+        client=client,
+        model=model,
+        task_id=task_id,
+        style=style,
+        caption=left_caption,
+        description=description,
+        temperature=temperature,
+    )
+    right_score, right_err = _judge_single_style(
+        client=client,
+        model=model,
+        task_id=task_id,
+        style=style,
+        caption=right_caption,
+        description=description,
+        temperature=temperature,
+    )
+    if left_score is None and right_score is None:
+        return -1
+    if left_score is None:
+        return 1
+    if right_score is None:
+        return 0
+    left_total = _judge_quality_total(left_score)
+    right_total = _judge_quality_total(right_score)
+    if left_total == right_total:
+        return 0
+    return 0 if left_total > right_total else 1
+
+
 def _judge_distinctness(
     *,
     client: OpenAI,
