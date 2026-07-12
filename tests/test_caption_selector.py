@@ -2,7 +2,14 @@
 
 from unittest.mock import MagicMock, patch
 
-from src.caption_selector import CaptionCandidate, is_friendly_placeholder, rank_caption, select_best_candidate
+from src.caption_selector import (
+    CaptionCandidate,
+    generate_best_of_n_caption,
+    is_friendly_placeholder,
+    pool_candidate_temperature,
+    rank_caption,
+    select_best_candidate,
+)
 from src.results import CaptionResult
 
 
@@ -78,3 +85,39 @@ class TestCaptionSelector:
         tiebreak.assert_called_once()
         assert best is not None
         assert best.label == "b"
+
+    def test_pool_candidate_temperature_delta(self, monkeypatch):
+        monkeypatch.setenv("CAPTION_POOL_TEMP_DELTA", "0.15")
+        assert pool_candidate_temperature("formal", 0) is None
+        assert pool_candidate_temperature("formal", 1) == 0.65  # 0.5 + 0.15
+
+    def test_best_of_n_uses_higher_temp_for_second_candidate(self, monkeypatch):
+        monkeypatch.setenv("CAPTION_POOL_TEMP_DELTA", "0.15")
+        monkeypatch.setenv("CAPTION_JUDGE_TIEBREAK", "0")
+        models = [
+            ("a", "accounts/fireworks/models/deepseek-v4-flash"),
+            ("b", "accounts/fireworks/models/deepseek-v4-flash"),
+        ]
+        ok = CaptionResult(
+            text=(
+                "Waves roll toward the rocky shore like a slow-motion stampede. "
+                "The foam goes nowhere useful."
+            ),
+            error=None,
+        )
+
+        with patch(
+            "src.caption_selector.generate_styled_caption_from_text",
+            return_value=ok,
+        ) as gen:
+            generate_best_of_n_caption(
+                client=MagicMock(),
+                models=models,
+                style="formal",
+                description="Setting: rocky coast",
+                parallel=False,
+            )
+        assert gen.call_count == 2
+        temps = [c.kwargs.get("temperature_override") for c in gen.call_args_list]
+        assert temps[0] is None
+        assert temps[1] == 0.65

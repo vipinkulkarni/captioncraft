@@ -40,6 +40,66 @@ def _store_live_description(store: dict[str, str], task_id: str, describe: Descr
         store[task_id] = describe.text.strip()
 
 
+def write_descriptions_cache(
+    path: Path,
+    descriptions: dict[str, str],
+    *,
+    meta: dict | None = None,
+) -> None:
+    payload = {
+        "descriptions": {str(k): str(v) for k, v in descriptions.items() if v},
+        "meta": meta or {},
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def merge_descriptions_into_file(path: Path, live: dict[str, str]) -> None:
+    """Merge live task descriptions into an existing cache file (preserve other keys)."""
+    existing: dict[str, str] = {}
+    meta: dict = {}
+    if path.is_file():
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and "descriptions" in data:
+            raw = data.get("descriptions") or {}
+            if isinstance(raw, dict):
+                existing = {str(k): str(v) for k, v in raw.items() if v}
+            if isinstance(data.get("meta"), dict):
+                meta = dict(data["meta"])
+        elif isinstance(data, dict):
+            existing = {str(k): str(v) for k, v in data.items() if v}
+    existing.update({str(k): str(v) for k, v in live.items() if v})
+    meta = {**meta, "updated_from_live": True}
+    write_descriptions_cache(path, existing, meta=meta)
+
+
+def persist_live_descriptions(
+    results_path: Path,
+    descriptions: dict[str, str],
+    *,
+    update_fixture: bool,
+) -> None:
+    """Write run-local descriptions_live.json; optionally merge into frozen fixture."""
+    if not descriptions:
+        return
+    live_path = results_path.parent / "descriptions_live.json"
+    write_descriptions_cache(
+        live_path,
+        descriptions,
+        meta={"source": "live_pipeline"},
+    )
+    if not update_fixture:
+        return
+    update_raw = os.environ.get("DESCRIPTIONS_UPDATE_PATH", "").strip()
+    if update_raw:
+        update_path = Path(update_raw)
+    else:
+        from src.eval_paths import DESCRIPTIONS_FULL
+
+        update_path = DESCRIPTIONS_FULL
+    merge_descriptions_into_file(update_path, descriptions)
+
+
 def read_tasks(path: Path) -> list[dict]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, list):
@@ -847,6 +907,12 @@ def _append_and_persist(
 ) -> None:
     results.append(result)
     write_results(results_path, results)
+    if ctx is not None and not ctx.descriptions_cache and ctx.descriptions_live:
+        persist_live_descriptions(
+            results_path,
+            ctx.descriptions_live,
+            update_fixture=True,
+        )
     if ctx is not None and ctx.judge_retry is not None and clip_index is not None:
         ctx.judge_retry.submit(result, clip_index=clip_index)
 
@@ -1313,5 +1379,14 @@ def run_full_tasks(
         finally:
             if results:
                 write_results(results_path, results)
+            if not ctx.descriptions_cache and ctx.descriptions_live:
+                persist_live_descriptions(
+                    results_path,
+                    ctx.descriptions_live,
+                    update_fixture=True,
+                )
+                log_human(
+                    f"wrote live descriptions -> {results_path.parent / 'descriptions_live.json'}"
+                )
             if ctx.judge_retry is not None:
                 ctx.judge_retry.finish()

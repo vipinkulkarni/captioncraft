@@ -13,8 +13,9 @@ from src.caption import (
     _FRIENDLY_CAPTION_FAILURE,
     generate_styled_caption_from_text,
     public_caption_result,
+    resolve_style_temperature,
 )
-from src.env import get_int_env
+from src.env import get_float_env, get_int_env
 from src.results import CaptionResult
 from src.scoring import score_caption
 from src.caption_grounding import grounding_bonus
@@ -28,6 +29,17 @@ class CaptionCandidate:
     result: CaptionResult
     score_rank: int
     score_reason: str
+
+
+def pool_candidate_temperature(style: str, index: int) -> float | None:
+    """Candidate 0 uses style default; later candidates get +CAPTION_POOL_TEMP_DELTA."""
+    if index <= 0:
+        return None
+    delta = get_float_env("CAPTION_POOL_TEMP_DELTA", 0.15)
+    if delta <= 0:
+        return None
+    base = resolve_style_temperature(style)
+    return min(base + delta, 0.97)
 
 
 def is_friendly_placeholder(text: str) -> bool:
@@ -135,6 +147,7 @@ def generate_candidate(
     description: str,
     diversity_retry: bool = False,
     temperature_override: float | None = None,
+    judge_feedback: str | None = None,
 ) -> CaptionCandidate:
     result = generate_styled_caption_from_text(
         client=client,
@@ -143,6 +156,7 @@ def generate_candidate(
         description=description,
         diversity_retry=diversity_retry,
         temperature_override=temperature_override,
+        judge_feedback=judge_feedback,
     )
     text = public_caption_result(result, style=style)
     rank, reason = rank_caption(text, style, description=description)
@@ -165,6 +179,7 @@ def generate_best_of_n_caption(
     parallel: bool = True,
     diversity_retry: bool = False,
     task_id: str = "tiebreak",
+    judge_feedback: str | None = None,
 ) -> CaptionCandidate:
     if style not in STYLES:
         raise ValueError(f"unsupported style: {style}")
@@ -178,11 +193,12 @@ def generate_best_of_n_caption(
             style=style,
             description=description,
             diversity_retry=diversity_retry,
+            judge_feedback=judge_feedback,
         )
 
     candidates: list[CaptionCandidate] = []
 
-    def _one(entry: tuple[str, str]) -> CaptionCandidate:
+    def _one(index: int, entry: tuple[str, str]) -> CaptionCandidate:
         label, model = entry
         return generate_candidate(
             client=client,
@@ -191,16 +207,19 @@ def generate_best_of_n_caption(
             style=style,
             description=description,
             diversity_retry=diversity_retry,
+            temperature_override=pool_candidate_temperature(style, index),
+            judge_feedback=judge_feedback,
         )
 
+    indexed = list(enumerate(models))
     if parallel:
         with ThreadPoolExecutor(max_workers=min(len(models), 4)) as pool:
-            futures = [pool.submit(_one, entry) for entry in models]
+            futures = [pool.submit(_one, index, entry) for index, entry in indexed]
             for fut in as_completed(futures):
                 candidates.append(fut.result())
     else:
-        for entry in models:
-            candidates.append(_one(entry))
+        for index, entry in indexed:
+            candidates.append(_one(index, entry))
 
     best = select_best_candidate(
         candidates,

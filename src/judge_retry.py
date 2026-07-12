@@ -20,8 +20,12 @@ from src.caption import (
 from src.caption_selector import generate_best_of_n_caption
 from src.env import get_float_env, get_int_env
 from src.llm_judge import (
+    CaptionJudgeScore,
     ClipJudgeResult,
+    _judge_single_style,
     judge_clip_call,
+    resolve_judge_min_score,
+    resolve_judge_quality_floor,
 )
 from src.results import DescribeResult
 from src.run_log import log_human
@@ -40,12 +44,12 @@ def remember_description(store: dict[str, str], task_id: str, describe: Describe
 def list_judge_failures(
     clip: ClipJudgeResult,
     *,
-    min_score: int,
+    min_score: float,
     captions: dict[str, str] | None = None,
 ) -> list[tuple[str, str]]:
     failures: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    quality_floor = get_int_env("JUDGE_RETRY_QUALITY_MIN", 4)
+    quality_floor = resolve_judge_quality_floor()
     check_regex = get_int_env("JUDGE_RETRY_REGEX", 1) == 1
 
     for style, score in clip.captions.items():
@@ -60,7 +64,7 @@ def list_judge_failures(
                 failures.append(key)
                 seen.add(key)
             continue
-        if score.accuracy < quality_floor or score.specificity < quality_floor:
+        if score.accuracy < quality_floor or score.style_match < quality_floor:
             if key not in seen:
                 failures.append(key)
                 seen.add(key)
@@ -78,6 +82,29 @@ def list_judge_failures(
     return failures
 
 
+def style_still_fails(
+    score: CaptionJudgeScore,
+    *,
+    task_id: str,
+    style: str,
+    caption: str,
+    min_score: float,
+) -> bool:
+    clip = ClipJudgeResult(task_id=task_id, captions={style: score})
+    return bool(
+        list_judge_failures(clip, min_score=min_score, captions={style: caption})
+    )
+
+
+def judge_feedback_nudge(score: CaptionJudgeScore) -> str:
+    issue = score.issue or score.skip_reason or "did not meet accuracy/style bar"
+    return (
+        f"Previous caption scored accuracy={score.accuracy:.2f} "
+        f"style_match={score.style_match:.2f}. Issue: {issue}. "
+        "Rewrite using only scene facts; do not invent objects or UI."
+    )
+
+
 def _regenerate_style_caption(
     *,
     client: OpenAI,
@@ -85,6 +112,7 @@ def _regenerate_style_caption(
     style: str,
     description: str,
     task_id: str = "",
+    judge_feedback: str | None = None,
 ) -> str:
     diversity = get_int_env("JUDGE_RETRY_DIVERSITY", 1) == 1
     retry_temp = get_float_env("JUDGE_RETRY_TEMPERATURE", 0.92) if diversity else None
@@ -97,6 +125,7 @@ def _regenerate_style_caption(
             description=description,
             diversity_retry=diversity,
             task_id=task_id or "retry",
+            judge_feedback=judge_feedback,
         )
         return candidate.text
     result = generate_styled_caption_from_text(
@@ -106,6 +135,7 @@ def _regenerate_style_caption(
         description=description,
         temperature_override=retry_temp,
         diversity_retry=diversity,
+        judge_feedback=judge_feedback,
     )
     return public_caption_result(result, style=style)
 
@@ -146,12 +176,13 @@ class PipelinedJudgeRetry:
         self._logged_estimate = False
         self._judge_client = judge_client
         self._judge_model = _resolve_judge_model()
-        self._min_score = get_int_env("JUDGE_MIN_SCORE", 3)
+        self._min_score = resolve_judge_min_score()
         self._reserve_s = get_float_env("JUDGE_RETRY_RESERVE_S", 18.0)
         self._min_remaining = get_float_env("JUDGE_MIN_REMAINING_S", 90.0)
         self._est_per_clip = get_float_env("JUDGE_ESTIMATE_PER_CLIP_S", 12.0)
         self._skip_distinctness = get_int_env("JUDGE_SKIP_DISTINCTNESS", 1) == 1
         self._parallel_styles = get_int_env("JUDGE_PARALLEL_STYLES", 1) == 1
+        self._max_per_style = max(get_int_env("JUDGE_RETRY_MAX_PER_STYLE", 2), 0)
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="judge-retry")
         self._futures: list[Future[None]] = []
 
@@ -186,6 +217,17 @@ class PipelinedJudgeRetry:
             f"~{self._est_per_clip:.0f}s/clip est, "
             f"~{tail_est:.0f}s judge tail if caption pipeline finishes now"
         )
+
+    def _persist_caption(self, result: dict, style: str, text: str) -> None:
+        with self._lock:
+            caps = result.get("captions")
+            if isinstance(caps, dict):
+                caps[style] = text
+            self._results_path.parent.mkdir(parents=True, exist_ok=True)
+            self._results_path.write_text(
+                json.dumps(self._results, indent=2),
+                encoding="utf-8",
+            )
 
     def _process_clip(self, result: dict, clip_index: int) -> None:
         task_id = str(result.get("task_id", ""))
@@ -229,27 +271,96 @@ class PipelinedJudgeRetry:
             min_score=self._min_score,
             captions={str(k): str(v) for k, v in captions.items()},
         ):
-            if not self._try_retry():
-                log_human("judge retry: stopping retries (budget exhausted)")
-                break
-            log_human(f"judge retry: re-caption {_task_id}/{style}...")
-            new_text = _regenerate_style_caption(
-                client=self._caption_client,
-                model=self._caption_model,
+            best_text = str(captions.get(style, ""))
+            best_score = clip.captions.get(style) or CaptionJudgeScore(
                 style=style,
-                description=description,
-                task_id=task_id,
+                accuracy=0.0,
+                style_match=0.0,
+                skipped=True,
+                skip_reason="missing-score",
             )
-            with self._lock:
-                caps = result.get("captions")
-                if isinstance(caps, dict):
-                    caps[style] = new_text
-                self._results_path.parent.mkdir(parents=True, exist_ok=True)
-                self._results_path.write_text(
-                    json.dumps(self._results, indent=2),
-                    encoding="utf-8",
+            stopped_budget = False
+            for attempt in range(1, self._max_per_style + 1):
+                if not style_still_fails(
+                    best_score,
+                    task_id=task_id,
+                    style=style,
+                    caption=best_text,
+                    min_score=self._min_score,
+                ):
+                    break
+                if not self._try_retry():
+                    log_human("judge retry: stopping retries (budget exhausted)")
+                    stopped_budget = True
+                    break
+                feedback = judge_feedback_nudge(best_score)
+                log_human(
+                    f"judge retry: re-caption {_task_id}/{style} "
+                    f"attempt {attempt}/{self._max_per_style}..."
                 )
-            log_human(f"judge retry: updated {_task_id}/{style}")
+                new_text = _regenerate_style_caption(
+                    client=self._caption_client,
+                    model=self._caption_model,
+                    style=style,
+                    description=description,
+                    task_id=task_id,
+                    judge_feedback=feedback,
+                )
+                new_score, err = _judge_single_style(
+                    client=self._get_judge_client(),
+                    model=self._judge_model,
+                    task_id=task_id,
+                    style=style,
+                    caption=new_text,
+                    description=description,
+                    temperature=0.2,
+                )
+                if new_score is None:
+                    log_human(
+                        f"judge retry: re-judge failed {_task_id}/{style} "
+                        f"({err or 'parse-error'}); keeping prior caption"
+                    )
+                    continue
+                if (
+                    best_score.skipped
+                    or new_score.average > best_score.average
+                    or not style_still_fails(
+                        new_score,
+                        task_id=task_id,
+                        style=style,
+                        caption=new_text,
+                        min_score=self._min_score,
+                    )
+                ):
+                    best_text = new_text
+                    best_score = new_score
+                    clip.captions[style] = best_score
+                    self._persist_caption(result, style, best_text)
+                    log_human(
+                        f"judge retry: updated {_task_id}/{style} "
+                        f"mean={best_score.average:.3f} "
+                        f"(acc={best_score.accuracy:.2f} "
+                        f"style={best_score.style_match:.2f})"
+                    )
+                else:
+                    log_human(
+                        f"judge retry: kept prior {_task_id}/{style} "
+                        f"(new mean={new_score.average:.3f} "
+                        f"< best={best_score.average:.3f})"
+                    )
+            if stopped_budget:
+                break
+            if style_still_fails(
+                best_score,
+                task_id=task_id,
+                style=style,
+                caption=best_text,
+                min_score=self._min_score,
+            ):
+                log_human(
+                    f"judge retry: capped {_task_id}/{style} "
+                    f"best mean={best_score.average:.3f}"
+                )
 
     def _try_retry(self) -> bool:
         with self._lock:

@@ -1,4 +1,4 @@
-"""LLM-as-judge scoring for caption eval (style fit, accuracy, specificity)."""
+"""LLM-as-judge scoring for caption eval (leaderboard-aligned accuracy + style)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Any, Callable
 from openai import APIConnectionError, APITimeoutError, OpenAI
 
 from src.caption import STYLES, get_fireworks_client
-from src.env import get_int_env
+from src.env import get_float_env, get_int_env
 from src.eval_paths import DESCRIPTIONS_FULL
 from src.pipeline import load_descriptions_cache
 from src.scoring import is_structural_failure
@@ -30,59 +30,89 @@ DEFAULT_JUDGE_PANEL_MODELS = (
     "accounts/fireworks/models/deepseek-v4-flash",
 )
 
-DIMENSIONS = ("style_fit", "accuracy", "specificity")
+# Leaderboard dimensions: accuracy + style_match on [0, 1].
+DIMENSIONS = ("accuracy", "style_match")
 _SCORE_FIELD_RE = re.compile(
-    r'"(style_fit|accuracy|specificity)"\s*:\s*(\d+)',
+    r'"(style_match|style_fit|accuracy)"\s*:\s*([0-9]*\.?[0-9]+)',
     re.I,
 )
 _ISSUE_FIELD_RE = re.compile(r'"issue"\s*:\s*"(.*?)"', re.I | re.S)
-_DISTINCTNESS_RE = re.compile(r'"cross_style_distinctness"\s*:\s*(\d+)', re.I)
+_DISTINCTNESS_RE = re.compile(
+    r'"cross_style_distinctness"\s*:\s*([0-9]*\.?[0-9]+)',
+    re.I,
+)
+# Distinctness warning floor on the same 0–1 scale as caption dims (~old 3/5).
+_DISTINCTNESS_WARN_MIN = 0.6
+
+
+def resolve_judge_min_score(override: float | None = None) -> float:
+    """Pipeline retry/pass bar on 0–1 scale (no legacy 1–5 remapping)."""
+    if override is not None:
+        raw = float(override)
+    else:
+        raw = get_float_env("JUDGE_MIN_SCORE", 0.9)
+    return max(0.0, min(1.0, raw))
+
+
+def resolve_judge_quality_floor() -> float:
+    """Retry when accuracy or style_match falls below this (0–1).
+
+    Defaults to the same value as JUDGE_MIN_SCORE so pass and retry share one bar.
+    """
+    if os.environ.get("JUDGE_RETRY_QUALITY_MIN", "").strip():
+        raw = get_float_env("JUDGE_RETRY_QUALITY_MIN", 0.9)
+    else:
+        raw = resolve_judge_min_score()
+    return max(0.0, min(1.0, raw))
 
 
 @dataclass
 class CaptionJudgeScore:
     style: str
-    style_fit: int
-    accuracy: int
-    specificity: int
+    accuracy: float
+    style_match: float
     issue: str = ""
     skipped: bool = False
     skip_reason: str = ""
 
     @property
     def average(self) -> float:
-        return (self.style_fit + self.accuracy + self.specificity) / 3.0
+        """Leaderboard-shaped mean of accuracy and style match."""
+        return (self.accuracy + self.style_match) / 2.0
 
-    def passes(self, *, min_score: int) -> bool:
+    def passes(self, *, min_score: float) -> bool:
         if self.skipped:
             return False
-        return (
-            self.style_fit >= min_score
-            and self.accuracy >= min_score
-            and self.specificity >= min_score
-        )
+        threshold = resolve_judge_min_score(min_score)
+        return self.accuracy >= threshold and self.style_match >= threshold
 
 
 @dataclass
 class ClipJudgeResult:
     task_id: str
     captions: dict[str, CaptionJudgeScore] = field(default_factory=dict)
-    cross_style_distinctness: int = 0
+    cross_style_distinctness: float = 0.0
     distinctness_note: str = ""
     parse_error: str = ""
 
-    def passing_styles(self, *, min_score: int) -> int:
+    def passing_styles(self, *, min_score: float) -> int:
         return sum(1 for c in self.captions.values() if c.passes(min_score=min_score))
 
     def total_styles(self) -> int:
         return len(self.captions)
+
+    def mean_score(self) -> float | None:
+        active = [c.average for c in self.captions.values() if not c.skipped]
+        if not active:
+            return None
+        return sum(active) / len(active)
 
 
 @dataclass
 class JudgeFileResult:
     clips: list[ClipJudgeResult]
     model: str
-    min_score: int
+    min_score: float
     descriptions_provided: bool
     panel_models: list[str] = field(default_factory=list)
     per_judge: dict[str, "JudgeFileResult"] = field(default_factory=dict)
@@ -99,13 +129,29 @@ class JudgeFileResult:
     def total(self) -> int:
         return sum(c.total_styles() for c in self.clips)
 
+    @property
+    def mean_score(self) -> float | None:
+        """Mean of per-caption (accuracy + style_match) / 2 — leaderboard proxy."""
+        values: list[float] = []
+        for clip in self.clips:
+            for score in clip.captions.values():
+                if not score.skipped:
+                    values.append(score.average)
+        if not values:
+            return None
+        return sum(values) / len(values)
+
     def low_distinctness(self) -> list[str]:
-        threshold = self.min_score
         out: list[str] = []
         for clip in self.clips:
-            if clip.cross_style_distinctness and clip.cross_style_distinctness < threshold:
+            if (
+                clip.cross_style_distinctness
+                and clip.cross_style_distinctness < _DISTINCTNESS_WARN_MIN
+            ):
                 note = clip.distinctness_note or "low distinctness"
-                out.append(f"{clip.task_id}: distinctness={clip.cross_style_distinctness} ({note})")
+                out.append(
+                    f"{clip.task_id}: distinctness={clip.cross_style_distinctness:.2f} ({note})"
+                )
         return out
 
     def failures(self) -> list[str]:
@@ -119,13 +165,12 @@ class JudgeFileResult:
                     weak = [
                         name
                         for name in DIMENSIONS
-                        if getattr(score, name) < self.min_score
+                        if getattr(score, name) < resolve_judge_min_score(self.min_score)
                     ]
                     detail = score.issue or ", ".join(weak)
                     dims = (
-                        f"style_fit={score.style_fit} "
-                        f"accuracy={score.accuracy} "
-                        f"specificity={score.specificity}"
+                        f"accuracy={score.accuracy:.2f} "
+                        f"style_match={score.style_match:.2f}"
                     )
                     fails.append(f"{clip.task_id}/{style}: judge {dims} ({detail})")
         return fails
@@ -159,14 +204,26 @@ def default_descriptions_path() -> Path | None:
     return _DEFAULT_DESCRIPTIONS_PATH if _DEFAULT_DESCRIPTIONS_PATH.is_file() else None
 
 
-def resolve_descriptions_path(path: Path | None) -> Path | None:
+def resolve_descriptions_path(
+    path: Path | None,
+    *,
+    results_path: Path | None = None,
+) -> Path | None:
     if path is not None:
         return path
+    if results_path is not None:
+        live = results_path.parent / "descriptions_live.json"
+        if live.is_file():
+            return live
     return default_descriptions_path()
 
 
-def load_descriptions(path: Path | None) -> dict[str, str]:
-    resolved = resolve_descriptions_path(path)
+def load_descriptions(
+    path: Path | None,
+    *,
+    results_path: Path | None = None,
+) -> dict[str, str]:
+    resolved = resolve_descriptions_path(path, results_path=results_path)
     if resolved is None:
         return {}
     data = json.loads(resolved.read_text(encoding="utf-8"))
@@ -177,22 +234,46 @@ def load_descriptions(path: Path | None) -> dict[str, str]:
     raise ValueError("descriptions file must be a task_id -> text map or cache with descriptions key")
 
 
-def _clamp_score(value: Any) -> int:
+def _parse_unit_score(value: Any) -> float | None:
+    """Parse a 0–1 score. Values outside [0, 1] are invalid (no legacy 1–5 remap)."""
     try:
-        score = int(round(float(value)))
+        score = float(value)
     except (TypeError, ValueError):
-        return 0
-    return max(1, min(5, score))
+        return None
+    if score < 0.0 or score > 1.0:
+        return None
+    return round(score, 3)
 
 
-def _median_int(values: list[int]) -> int:
+def _clamp_unit_score(value: Any) -> float:
+    """Clamp to 0–1, treating missing/invalid as 0. Prefer _parse_unit_score for judge JSON."""
+    parsed = _parse_unit_score(value)
+    return 0.0 if parsed is None else parsed
+
+
+def _median_float(values: list[float]) -> float:
     if not values:
-        return 0
+        return 0.0
     ordered = sorted(values)
     mid = len(ordered) // 2
     if len(ordered) % 2:
         return ordered[mid]
-    return int(round((ordered[mid - 1] + ordered[mid]) / 2))
+    return round((ordered[mid - 1] + ordered[mid]) / 2.0, 3)
+
+
+def _score_from_payload(style: str, entry: dict[str, Any]) -> CaptionJudgeScore | None:
+    # Accept legacy "style_fit" key from older payloads; store as style_match.
+    style_raw = entry.get("style_match", entry.get("style_fit"))
+    accuracy = _parse_unit_score(entry.get("accuracy"))
+    style_match = _parse_unit_score(style_raw)
+    if accuracy is None or style_match is None:
+        return None
+    return CaptionJudgeScore(
+        style=style,
+        accuracy=accuracy,
+        style_match=style_match,
+        issue=str(entry.get("issue") or "").strip(),
+    )
 
 
 def resolve_judge_models(*, panel: bool = False, override: list[str] | None = None) -> list[str]:
@@ -240,9 +321,8 @@ def aggregate_clip_judges(per_judge: dict[str, ClipJudgeResult]) -> ClipJudgeRes
             reason = skip_reasons[0] if skip_reasons else "judge-missing-style"
             aggregated.captions[style] = CaptionJudgeScore(
                 style=style,
-                style_fit=0,
-                accuracy=0,
-                specificity=0,
+                accuracy=0.0,
+                style_match=0.0,
                 issue=reason,
                 skipped=True,
                 skip_reason=reason,
@@ -252,9 +332,8 @@ def aggregate_clip_judges(per_judge: dict[str, ClipJudgeResult]) -> ClipJudgeRes
         issues = [s.issue for s in active_scores if s.issue]
         aggregated.captions[style] = CaptionJudgeScore(
             style=style,
-            style_fit=_median_int([s.style_fit for s in active_scores]),
-            accuracy=_median_int([s.accuracy for s in active_scores]),
-            specificity=_median_int([s.specificity for s in active_scores]),
+            accuracy=_median_float([s.accuracy for s in active_scores]),
+            style_match=_median_float([s.style_match for s in active_scores]),
             issue="; ".join(dict.fromkeys(issues))[:240],
         )
 
@@ -263,7 +342,7 @@ def aggregate_clip_judges(per_judge: dict[str, ClipJudgeResult]) -> ClipJudgeRes
         for clip in per_judge.values()
         if clip.cross_style_distinctness
     ]
-    aggregated.cross_style_distinctness = _median_int(distinctness_vals)
+    aggregated.cross_style_distinctness = _median_float(distinctness_vals)
     notes = [clip.distinctness_note for clip in per_judge.values() if clip.distinctness_note]
     aggregated.distinctness_note = notes[0] if notes else ""
     parse_errors = [clip.parse_error for clip in per_judge.values() if clip.parse_error]
@@ -277,28 +356,29 @@ def _auto_skip_caption(text: str, style: str) -> CaptionJudgeScore | None:
         return None
     return CaptionJudgeScore(
         style=style,
-        style_fit=0,
-        accuracy=0,
-        specificity=0,
+        accuracy=0.0,
+        style_match=0.0,
         issue=reason,
         skipped=True,
         skip_reason=reason,
     )
 
 
-def parse_judge_response(raw: str, *, styles: tuple[str, ...] = STYLES) -> tuple[dict[str, CaptionJudgeScore], int, str, str]:
-    """Parse batch clip judge JSON (legacy)."""
+def parse_judge_response(
+    raw: str, *, styles: tuple[str, ...] = STYLES
+) -> tuple[dict[str, CaptionJudgeScore], float, str, str]:
+    """Parse batch clip judge JSON (accuracy/style_match + optional distinctness)."""
     try:
         payload = json.loads(_extract_json_object(raw))
     except json.JSONDecodeError as exc:
-        return {}, 0, "", f"InvalidJSON: {exc}"
+        return {}, 0.0, "", f"InvalidJSON: {exc}"
 
     if not isinstance(payload, dict):
-        return {}, 0, "", "InvalidJSON: root must be object"
+        return {}, 0.0, "", "InvalidJSON: root must be object"
 
     captions_raw = payload.get("captions")
     if not isinstance(captions_raw, dict):
-        return {}, 0, "", "InvalidJSON: missing captions object"
+        return {}, 0.0, "", "InvalidJSON: missing captions object"
 
     scores: dict[str, CaptionJudgeScore] = {}
     for style in styles:
@@ -306,23 +386,25 @@ def parse_judge_response(raw: str, *, styles: tuple[str, ...] = STYLES) -> tuple
         if not isinstance(entry, dict):
             scores[style] = CaptionJudgeScore(
                 style=style,
-                style_fit=0,
-                accuracy=0,
-                specificity=0,
+                accuracy=0.0,
+                style_match=0.0,
                 issue="missing from judge response",
                 skipped=True,
                 skip_reason="judge-missing-style",
             )
             continue
-        scores[style] = CaptionJudgeScore(
-            style=style,
-            style_fit=_clamp_score(entry.get("style_fit")),
-            accuracy=_clamp_score(entry.get("accuracy")),
-            specificity=_clamp_score(entry.get("specificity")),
-            issue=str(entry.get("issue") or "").strip(),
-        )
+        scores[style] = _score_from_payload(style, entry)
+        if scores[style] is None:
+            scores[style] = CaptionJudgeScore(
+                style=style,
+                accuracy=0.0,
+                style_match=0.0,
+                issue="invalid unit scores (expected 0-1)",
+                skipped=True,
+                skip_reason="judge-invalid-scores",
+            )
 
-    distinctness = _clamp_score(payload.get("cross_style_distinctness"))
+    distinctness = _parse_unit_score(payload.get("cross_style_distinctness")) or 0.0
     note = str(payload.get("distinctness_note") or "").strip()
     return scores, distinctness, note, ""
 
@@ -336,14 +418,17 @@ def _payload_from_lenient_json(raw: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         pass
 
-    fields = {name.lower(): int(value) for name, value in _SCORE_FIELD_RE.findall(text)}
-    if len(fields) < 3:
+    fields: dict[str, Any] = {
+        name.lower(): float(value) for name, value in _SCORE_FIELD_RE.findall(text)
+    }
+    if "accuracy" not in fields:
         return None
+    if "style_match" not in fields and "style_fit" not in fields:
+        return None
+    if "style_match" not in fields and "style_fit" in fields:
+        fields["style_match"] = fields["style_fit"]
     issue_match = _ISSUE_FIELD_RE.search(text)
-    if issue_match:
-        fields["issue"] = issue_match.group(1).strip()
-    else:
-        fields["issue"] = ""
+    fields["issue"] = issue_match.group(1).strip() if issue_match else ""
     return fields
 
 
@@ -353,23 +438,23 @@ def parse_style_judge_response(raw: str, *, style: str) -> tuple[CaptionJudgeSco
     payload = _payload_from_lenient_json(raw)
     if payload is None:
         return None, "InvalidJSON: could not parse judge scores"
-    return CaptionJudgeScore(
-        style=style,
-        style_fit=_clamp_score(payload.get("style_fit")),
-        accuracy=_clamp_score(payload.get("accuracy")),
-        specificity=_clamp_score(payload.get("specificity")),
-        issue=str(payload.get("issue") or "").strip(),
-    ), ""
+    score = _score_from_payload(style, payload)
+    if score is None:
+        return None, "InvalidJSON: scores must be floats in [0, 1]"
+    return score, ""
 
 
-def parse_distinctness_response(raw: str) -> tuple[int, str, str]:
+def parse_distinctness_response(raw: str) -> tuple[float, str, str]:
     if not raw.strip():
-        return 0, "", "EmptyResponse"
+        return 0.0, "", "EmptyResponse"
     try:
         payload = json.loads(_extract_json_object(raw))
         if isinstance(payload, dict):
+            score = _parse_unit_score(payload.get("cross_style_distinctness"))
+            if score is None:
+                return 0.0, "", "InvalidJSON: distinctness must be a float in [0, 1]"
             return (
-                _clamp_score(payload.get("cross_style_distinctness")),
+                score,
                 str(payload.get("distinctness_note") or "").strip(),
                 "",
             )
@@ -377,8 +462,11 @@ def parse_distinctness_response(raw: str) -> tuple[int, str, str]:
         pass
     match = _DISTINCTNESS_RE.search(raw)
     if match:
-        return _clamp_score(match.group(1)), "", ""
-    return 0, "", "InvalidJSON: could not parse distinctness"
+        score = _parse_unit_score(match.group(1))
+        if score is not None:
+            return score, "", ""
+        return 0.0, "", "InvalidJSON: distinctness must be a float in [0, 1]"
+    return 0.0, "", "InvalidJSON: could not parse distinctness"
 
 
 def _chat_json(
@@ -455,7 +543,8 @@ def _judge_single_style(
 
 
 def _judge_quality_total(score: CaptionJudgeScore) -> float:
-    return score.accuracy * 2.0 + score.specificity + score.style_fit
+    # Accuracy weighted higher, matching leaderboard emphasis on faithfulness.
+    return score.accuracy * 2.0 + score.style_match
 
 
 def judge_tiebreak_pick(
@@ -508,7 +597,7 @@ def _judge_distinctness(
     task_id: str,
     captions: dict[str, str],
     temperature: float,
-) -> tuple[int, str, str]:
+) -> tuple[float, str, str]:
     system_prompt = load_judge_distinctness_prompt()
     lines = [f"Task: {task_id}", "", "Captions:"]
     for style in STYLES:
@@ -529,7 +618,7 @@ def _judge_distinctness(
         if not err:
             return distinctness, note, ""
         last_error = err
-    return 0, "", last_error
+    return 0.0, "", last_error
 
 
 def judge_clip_call(
@@ -564,9 +653,8 @@ def judge_clip_call(
         if score is None:
             return style, CaptionJudgeScore(
                 style=style,
-                style_fit=0,
-                accuracy=0,
-                specificity=0,
+                accuracy=0.0,
+                style_match=0.0,
                 skipped=True,
                 skip_reason=err or "judge-parse-error",
             )
@@ -608,7 +696,7 @@ def judge_results_data(
     descriptions: dict[str, str] | None = None,
     client: OpenAI | None = None,
     model: str | None = None,
-    min_score: int | None = None,
+    min_score: float | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> JudgeFileResult:
     descriptions = descriptions or {}
@@ -617,7 +705,7 @@ def judge_results_data(
         "JUDGE_MODEL",
         os.environ.get("CAPTION_MODEL", "accounts/fireworks/models/deepseek-v4-flash"),
     )
-    threshold = min_score if min_score is not None else get_int_env("JUDGE_MIN_SCORE", 3)
+    threshold = resolve_judge_min_score(min_score)
 
     clips: list[ClipJudgeResult] = []
     total = len(data)
@@ -669,7 +757,7 @@ def judge_results_data_panel(
     descriptions: dict[str, str] | None = None,
     client: OpenAI | None = None,
     models: list[str] | None = None,
-    min_score: int | None = None,
+    min_score: float | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> JudgeFileResult:
     panel_models = resolve_judge_models(panel=True, override=models)
@@ -703,7 +791,7 @@ def judge_results_data_panel(
         per_clip = {model: result.clips[index] for model, result in per_judge.items()}
         aggregated_clips.append(aggregate_clip_judges(per_clip))
 
-    threshold = min_score if min_score is not None else get_int_env("JUDGE_MIN_SCORE", 3)
+    threshold = resolve_judge_min_score(min_score)
     model_label = "panel(median): " + ", ".join(_model_short_name(m) for m in panel_models)
     result = JudgeFileResult(
         clips=aggregated_clips,
@@ -726,8 +814,8 @@ def judge_file(
     judge_models: list[str] | None = None,
 ) -> JudgeFileResult:
     data = json.loads(path.read_text(encoding="utf-8"))
-    resolved = resolve_descriptions_path(descriptions_path)
-    descriptions = load_descriptions(resolved) if resolved else {}
+    # Prefer results_dir/descriptions_live.json when --descriptions is omitted.
+    descriptions = load_descriptions(descriptions_path, results_path=path)
     if panel:
         return judge_results_data_panel(data, descriptions=descriptions, models=judge_models)
     return judge_results_data(data, descriptions=descriptions)
@@ -740,6 +828,7 @@ def judge_result_to_dict(result: JudgeFileResult) -> dict[str, Any]:
         "descriptions_provided": result.descriptions_provided,
         "passes": result.passes,
         "total": result.total,
+        "mean_score": result.mean_score,
         "panel_models": list(result.panel_models),
         "clips": [
             {
@@ -759,6 +848,7 @@ def judge_result_to_dict(result: JudgeFileResult) -> dict[str, Any]:
             model: {
                 "passes": sub.passes,
                 "total": sub.total,
+                "mean_score": sub.mean_score,
                 "model": sub.model,
             }
             for model, sub in result.per_judge.items()
@@ -775,6 +865,7 @@ def collect_calibration_samples(
     """Borderline captions near the pass threshold for human spot-check."""
     by_id = {str(task["task_id"]): task for task in data}
     samples: list[tuple[float, dict[str, Any]]] = []
+    threshold = resolve_judge_min_score(result.min_score)
 
     for clip in result.clips:
         task = by_id.get(clip.task_id, {})
@@ -782,17 +873,14 @@ def collect_calibration_samples(
         for style, score in clip.captions.items():
             if score.skipped:
                 continue
-            min_dim = min(score.style_fit, score.accuracy, score.specificity)
+            min_dim = min(score.style_match, score.accuracy)
             passed = score.passes(min_score=result.min_score)
-            near_threshold = (
-                min_dim in {result.min_score - 1, result.min_score, result.min_score + 1}
-                or abs(score.average - result.min_score) <= 0.75
-            )
+            near_threshold = abs(min_dim - threshold) <= 0.15 or abs(score.average - threshold) <= 0.15
             if not near_threshold:
                 continue
-            distance = abs(min_dim - result.min_score) + abs(score.average - result.min_score) * 0.25
+            distance = abs(min_dim - threshold) + abs(score.average - threshold) * 0.25
             if not passed:
-                distance -= 0.1
+                distance -= 0.05
             samples.append(
                 (
                     distance,
@@ -800,9 +888,9 @@ def collect_calibration_samples(
                         "task_id": clip.task_id,
                         "style": style,
                         "passed": passed,
-                        "style_fit": score.style_fit,
+                        "style_match": score.style_match,
                         "accuracy": score.accuracy,
-                        "specificity": score.specificity,
+                        "mean": score.average,
                         "issue": score.issue,
                         "caption": str(captions.get(style, "")),
                     },
@@ -815,14 +903,13 @@ def collect_calibration_samples(
 
 def format_calibration_report(samples: list[dict[str, Any]]) -> str:
     if not samples:
-        return "No borderline captions found near the current threshold."
+        return "No borderline captions found near the current pipeline bar."
     lines = [f"Borderline captions for human spot-check ({len(samples)}):", ""]
     for index, sample in enumerate(samples, start=1):
-        verdict = "PASS" if sample["passed"] else "FAIL"
-        lines.append(f"{index}. [{verdict}] {sample['task_id']}/{sample['style']}")
+        lines.append(f"{index}. {sample['task_id']}/{sample['style']}")
         lines.append(
-            f"   scores: style_fit={sample['style_fit']} "
-            f"accuracy={sample['accuracy']} specificity={sample['specificity']}"
+            f"   scores: accuracy={sample['accuracy']:.2f} "
+            f"style_match={sample['style_match']:.2f} mean={sample['mean']:.3f}"
         )
         if sample.get("issue"):
             lines.append(f"   issue: {sample['issue']}")
@@ -832,18 +919,55 @@ def format_calibration_report(samples: list[dict[str, Any]]) -> str:
 
 
 def format_judge_summary(result: JudgeFileResult) -> str:
+    """Leaderboard-style report: per-caption means, then overall average.
+
+    Pass/fail is a pipeline retry concern only — this summary does not verdict captions.
+    """
+    mean = result.mean_score
+    mean_line = f"{mean:.3f}" if mean is not None else "n/a"
+
+    acc_vals: list[float] = []
+    style_vals: list[float] = []
+    rows: list[tuple[float, str]] = []
+    for clip in result.clips:
+        for style, score in clip.captions.items():
+            key = f"{clip.task_id}/{style}"
+            if score.skipped:
+                rows.append((-1.0, f"  {key}: skipped ({score.skip_reason})"))
+                continue
+            acc_vals.append(score.accuracy)
+            style_vals.append(score.style_match)
+            row = (
+                f"  {key}: accuracy={score.accuracy:.2f} "
+                f"style_match={score.style_match:.2f} mean={score.average:.3f}"
+            )
+            if score.issue:
+                row = f"{row}  ({score.issue})"
+            rows.append((score.average, row))
+
     lines = [
-        f"{result.passes}/{result.total}",
-        f"  (judge min={result.min_score}, model={result.model})",
+        f"leaderboard_proxy={mean_line}  (n={result.total} captions)",
+        f"  (model={result.model})",
     ]
+    if acc_vals:
+        lines.append(
+            f"  mean_accuracy={sum(acc_vals) / len(acc_vals):.3f}  "
+            f"mean_style_match={sum(style_vals) / len(style_vals):.3f}"
+        )
     if result.is_panel and result.per_judge:
         lines.append("  per-judge:")
         for model, sub in result.per_judge.items():
-            lines.append(f"    {_model_short_name(model)}: {sub.passes}/{sub.total}")
+            sub_mean = sub.mean_score
+            sub_mean_s = f"{sub_mean:.3f}" if sub_mean is not None else "n/a"
+            lines.append(f"    {_model_short_name(model)}: proxy={sub_mean_s}")
     if not result.descriptions_provided:
         lines.append("  (no scene facts — accuracy is plausibility-only)")
-    for fail in result.failures():
-        lines.append(f"  {fail}")
+
+    # Weakest first so low scores surface; skipped last.
+    rows.sort(key=lambda item: (item[0] < 0, item[0] if item[0] >= 0 else 0.0))
+    lines.append("per-caption scores (weakest first):")
+    lines.extend(row for _mean, row in rows)
+
     warnings = result.low_distinctness()
     if warnings:
         lines.append("distinctness warnings:")

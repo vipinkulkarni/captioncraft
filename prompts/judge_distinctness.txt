@@ -1,9 +1,10 @@
 Rate how distinct four captions for the same clip feel as different voices.
 
-Score cross_style_distinctness 1–5:
-- 5: clearly four different tones and word choices
-- 3: some variation but noticeable overlap
-- 1: near paraphrases of the same caption
+Score cross_style_distinctness as a float from 0.0 to 1.0:
+- 1.0: clearly four different tones and word choices
+- 0.6: some variation but noticeable overlap
+- 0.2: near paraphrases of the same caption
+- 0.0: essentially identical captions
 
 Return ONLY JSON:
-{"cross_style_distinctness":1,"distinctness_note":"short note if weak, else empty string"}
+{"cross_style_distinctness":0.0,"distinctness_note":"short note if weak, else empty string"}
