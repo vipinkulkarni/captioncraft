@@ -2,6 +2,7 @@
 
 from src.caption import resolve_caption_model_pool
 from src.llm_clients import (
+    fireworks_extra_body,
     is_google_ai_model,
     is_openrouter_model,
     resolve_google_model_id as _resolve_google_model_id,
@@ -29,3 +30,9 @@ class TestOpenRouterRouting:
     def test_default_caption_pool_disabled_without_env(self, monkeypatch):
         monkeypatch.delenv("CAPTION_MODEL_POOL", raising=False)
         assert resolve_caption_model_pool() == []
+
+    def test_qwen_disables_thinking(self):
+        assert fireworks_extra_body("accounts/fireworks/models/qwen3p7-plus") == {
+            "thinking": {"type": "disabled"}
+        }
+        assert fireworks_extra_body("accounts/fireworks/models/minimax-m3") is None

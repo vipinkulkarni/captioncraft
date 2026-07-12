@@ -29,10 +29,19 @@ class TestDeadlineGuard:
         ctx = _make_ctx(time_budget_s=0.0)
         assert not ctx.should_skip_primary_describe(remaining_clips=12)
 
-    def test_disabled_without_fallback(self, monkeypatch):
+    def test_disabled_without_fallback_or_dual(self, monkeypatch):
         monkeypatch.delenv("VISION_FALLBACK_MODEL", raising=False)
+        monkeypatch.setenv("DESCRIBE_DUAL", "0")
+        monkeypatch.delenv("VISION_ALT_MODEL", raising=False)
         ctx = _make_ctx(time_budget_s=540.0, run_start=time.monotonic() - 530.0)
         assert not ctx.should_skip_primary_describe(remaining_clips=5)
+
+    def test_skips_when_dual_enabled_and_budget_tight(self, monkeypatch):
+        monkeypatch.delenv("VISION_FALLBACK_MODEL", raising=False)
+        monkeypatch.setenv("DESCRIBE_DUAL", "1")
+        monkeypatch.setenv("VISION_ALT_MODEL", "accounts/fireworks/models/qwen3p7-plus")
+        ctx = _make_ctx(time_budget_s=540.0, run_start=time.monotonic() - 500.0)
+        assert ctx.should_skip_primary_describe(remaining_clips=5)
 
     def test_skips_primary_when_budget_tight(self, monkeypatch):
         monkeypatch.setenv("VISION_FALLBACK_MODEL", "accounts/fireworks/models/minimax-m3")

@@ -27,6 +27,7 @@ from src.llm_clients import (
     google_api_key as _google_api_key,
     is_google_ai_model,
     is_openrouter_model,
+    fireworks_extra_body,
     resolve_google_model_id as _resolve_google_model_id,
     resolve_llm_client,
 )
@@ -388,6 +389,9 @@ def vision_describe_call(
     }
     if json_mode:
         request_kwargs["response_format"] = {"type": "json_object"}
+    extra = fireworks_extra_body(model)
+    if extra:
+        request_kwargs["extra_body"] = extra
     resp = client.chat.completions.create(**request_kwargs)
     choice = resp.choices[0]
     text = _strip_wrapping_quotes((choice.message.content or "").strip())

@@ -11,11 +11,17 @@ from src.retry import RetryPolicy, call_with_retry
 def test_describe_max_attempts_with_fallback(monkeypatch):
     monkeypatch.setenv("DESCRIBE_MAX_ATTEMPTS", "2")
     monkeypatch.setenv("DESCRIBE_MAX_ATTEMPTS_WITH_FALLBACK", "1")
+    monkeypatch.setenv("DESCRIBE_DUAL", "0")
+    monkeypatch.delenv("VISION_ALT_MODEL", raising=False)
     monkeypatch.setenv("VISION_FALLBACK_MODEL", "accounts/fireworks/models/minimax-m3")
     assert _describe_max_attempts() == 1
 
     monkeypatch.delenv("VISION_FALLBACK_MODEL", raising=False)
     assert _describe_max_attempts() == 2
+
+    monkeypatch.setenv("DESCRIBE_DUAL", "1")
+    monkeypatch.setenv("VISION_ALT_MODEL", "accounts/fireworks/models/qwen3p7-plus")
+    assert _describe_max_attempts() == 1
 
 
 def test_call_with_retry_stops_on_timeout():

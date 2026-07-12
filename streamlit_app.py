@@ -24,9 +24,9 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
-_DEFAULT_VISION_MODEL = "google-ai/gemma-4-26b-a4b-it"
+_DEFAULT_VISION_MODEL = "accounts/fireworks/models/minimax-m3"
 _DEFAULT_CAPTION_MODEL = "accounts/fireworks/models/deepseek-v4-flash"
-_DEFAULT_VISION_FALLBACK = "accounts/fireworks/models/minimax-m3"
+_DEFAULT_VISION_FALLBACK = "accounts/fireworks/models/qwen3p7-plus"
 
 
 def _apply_demo_env() -> None:
@@ -38,14 +38,12 @@ def _apply_demo_env() -> None:
     os.environ.setdefault("STYLE_META_LEAK_SALVAGE", "1")
     os.environ.setdefault("GOOGLE_API_TIMEOUT_S", "30")
     os.environ.setdefault("DESCRIBE_MAX_ATTEMPTS_WITH_FALLBACK", "1")
+    os.environ.setdefault("DESCRIBE_DUAL", "1")
+    os.environ.setdefault("VISION_ALT_MODEL", "accounts/fireworks/models/qwen3p7-plus")
 
 
 def _default_vision_model() -> str:
-    raw = _env("VISION_MODEL")
-    if raw and is_google_ai_model(raw):
-        return raw
-    # Legacy shell/Cloud secrets often set VISION_MODEL to MiniMax — Gemma is primary.
-    return _DEFAULT_VISION_MODEL
+    return _env("VISION_MODEL") or _DEFAULT_VISION_MODEL
 
 
 def _default_caption_model() -> str:
@@ -63,6 +61,8 @@ def _pretty_model(model: str) -> str:
     lower = m.lower()
     if "minimax-m3" in lower:
         return "MiniMax M3"
+    if "qwen3p7" in lower or "qwen3.7" in lower:
+        return "Qwen3.7 Plus"
     if "gemma-4" in lower or "gemma_4" in lower:
         return "Gemma 4 (vision)"
     if "gemma" in lower:

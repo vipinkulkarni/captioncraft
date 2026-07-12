@@ -22,6 +22,7 @@ TASKS_TRAIN = DATASETS_DIR / "tasks_train10.json"
 TASKS_TEST = DATASETS_DIR / "tasks_test6.json"
 TASKS_AMD3 = DATASETS_DIR / "tasks_amd_example_vids.json"
 TASKS_PILOT = DATASETS_DIR / "tasks_eval_pilot_lengths.json"
+TASKS_BLIND = DATASETS_DIR / "tasks_blind10.json"
 
 DESCRIPTIONS_FULL = FIXTURES_DIR / "descriptions_eval16.json"
 DESCRIPTIONS_TRAIN = FIXTURES_DIR / "descriptions_train10.json"

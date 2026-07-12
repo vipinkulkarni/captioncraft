@@ -27,6 +27,12 @@ from src.caption import (
     vision_describe_call,
 )
 from src.caption_selector import generate_best_of_n_caption
+from src.describe_judge import (
+    cross_judge_describes,
+    dual_describe_enabled,
+    pick_best_describe,
+    resolve_vision_alt_model,
+)
 from src.describe_schema import parse_describe_json
 from src.describe_quality import describe_quality_issue
 from src.env import get_float_env, get_frame_config, get_int_env, resolve_frame_count
@@ -282,9 +288,19 @@ def _vision_fallback_model() -> str:
     return os.environ.get("VISION_FALLBACK_MODEL", "").strip()
 
 
+def _dual_describe_available(primary_model: str) -> bool:
+    if not dual_describe_enabled():
+        return False
+    alt = resolve_vision_alt_model()
+    return bool(alt) and alt != primary_model
+
+
 def _describe_max_attempts() -> int:
     base = max(get_int_env("DESCRIBE_MAX_ATTEMPTS", 2), 1)
-    if not _vision_fallback_model():
+    has_second = bool(_vision_fallback_model()) or (
+        dual_describe_enabled() and bool(resolve_vision_alt_model())
+    )
+    if not has_second:
         return base
     with_fallback = get_int_env("DESCRIBE_MAX_ATTEMPTS_WITH_FALLBACK", 1)
     return max(min(with_fallback, base), 1)
@@ -419,6 +435,77 @@ def _describe_frames(
     )
 
 
+def _describe_dual_parallel(
+    *,
+    client: OpenAI | None,
+    model: str,
+    alt_model: str,
+    task_id: str,
+    frames: list[bytes],
+    duration_s: float = 0.0,
+) -> DescribeResult:
+    """Parallel M3∥Qwen describe, then cross-judge and pick the better text."""
+    alt_client = resolve_llm_client(alt_model, fallback=client)
+    log_human(f"  {task_id}: dual describe ({model} ∥ {alt_model})")
+
+    def _one(desc_client: OpenAI | None, desc_model: str) -> DescribeResult:
+        return _describe_frames(
+            client=desc_client,
+            model=desc_model,
+            task_id=task_id,
+            frames=frames,
+            duration_s=duration_s,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_primary = pool.submit(_one, client, model)
+        fut_alt = pool.submit(_one, alt_client, alt_model)
+        primary = fut_primary.result()
+        alternate = fut_alt.result()
+
+    if not primary.ok and not alternate.ok:
+        log_human(
+            f"  {task_id}: dual describe both failed "
+            f"(primary={primary.error_detail or primary.error}, "
+            f"alt={alternate.error_detail or alternate.error})",
+        )
+        return primary
+    if primary.ok and not alternate.ok:
+        log_human(f"  {task_id}: dual — using primary only (alt failed)")
+        return primary
+    if alternate.ok and not primary.ok:
+        log_human(f"  {task_id}: dual — using alt only (primary failed)")
+        return alternate
+
+    assert primary.text and alternate.text
+    log_human(f"  {task_id}: cross-judging describes...")
+    primary_score, alternate_score = cross_judge_describes(
+        frames_jpeg=frames,
+        primary_text=primary.text,
+        primary_model=model,
+        alternate_text=alternate.text,
+        alternate_model=alt_model,
+        client=client,
+        parallel=True,
+    )
+    winner, winner_model, _, _ = pick_best_describe(
+        primary=primary,
+        primary_model=model,
+        alternate=alternate,
+        alternate_model=alt_model,
+        primary_score=primary_score,
+        alternate_score=alternate_score,
+    )
+    p_proxy = f"{primary_score.proxy:.2f}" if primary_score.ok else "n/a"
+    a_proxy = f"{alternate_score.proxy:.2f}" if alternate_score.ok else "n/a"
+    short = winner_model.rsplit("/", 1)[-1]
+    log_human(
+        f"  {task_id}: dual pick={short} "
+        f"(primary_proxy={p_proxy} alt_proxy={a_proxy})",
+    )
+    return winner
+
+
 def _describe_with_fallback(
     *,
     client: OpenAI | None,
@@ -429,28 +516,55 @@ def _describe_with_fallback(
     duration_s: float = 0.0,
 ) -> DescribeResult:
     fallback = _vision_fallback_model()
+    alt_model = resolve_vision_alt_model()
     deadline_skip = skip_primary
     long_skip = _should_skip_primary_for_duration(duration_s)
-    skip_primary = deadline_skip or long_skip
+    skip_dual = deadline_skip or long_skip
 
-    if skip_primary and fallback and fallback != model:
+    # Full dual path when budget allows.
+    if _dual_describe_available(model) and not skip_dual:
+        return _describe_dual_parallel(
+            client=client,
+            model=model,
+            alt_model=alt_model,
+            task_id=task_id,
+            frames=frames,
+            duration_s=duration_s,
+        )
+
+    # Budget / long-clip: single fast describe (prefer primary; else fallback).
+    if skip_dual:
         guard = (
             "deadline guard active"
             if deadline_skip
             else f"long clip ({duration_s:.0f}s)"
         )
-        log_human(f"  {task_id}: {guard}, describing with {fallback}")
-        fallback_client = resolve_llm_client(fallback, fallback=client)
+        single = model
+        if fallback and fallback != model and deadline_skip:
+            # Legacy path: under deadline, prefer configured fallback when set.
+            single = fallback
+        log_human(f"  {task_id}: {guard}, single describe with {single}")
+        single_client = resolve_llm_client(single, fallback=client)
         result = _describe_frames(
-            client=fallback_client,
-            model=fallback,
+            client=single_client,
+            model=single,
             task_id=task_id,
             frames=frames,
             duration_s=duration_s,
         )
         if result.ok:
             return result
-        # Fallback itself failed; fall through to the primary as a last resort.
+        if single != model:
+            result = _describe_frames(
+                client=client,
+                model=model,
+                task_id=task_id,
+                frames=frames,
+                duration_s=duration_s,
+            )
+            if result.ok:
+                return result
+        # Fall through to sequential fallback below if still failing.
 
     result = _describe_frames(
         client=client,
@@ -462,17 +576,18 @@ def _describe_with_fallback(
     if result.ok:
         return result
 
-    if not fallback or fallback == model or skip_primary:
+    sequential_fallback = fallback or (alt_model if alt_model != model else "")
+    if not sequential_fallback or sequential_fallback == model:
         return result
 
     log_human(
         f"  {task_id}: primary describe failed "
-        f"({result.error_detail or result.error}), trying fallback {fallback}",
+        f"({result.error_detail or result.error}), trying fallback {sequential_fallback}",
     )
-    fallback_client = resolve_llm_client(fallback, fallback=client)
+    fallback_client = resolve_llm_client(sequential_fallback, fallback=client)
     fallback_result = _describe_frames(
         client=fallback_client,
-        model=fallback,
+        model=sequential_fallback,
         task_id=task_id,
         frames=frames,
         duration_s=duration_s,
@@ -779,13 +894,15 @@ class _RunContext:
     judge_retry: object | None = None
 
     def should_skip_primary_describe(self, *, remaining_clips: int) -> bool:
-        """True when the remaining budget only covers fast fallback describes.
+        """True when budget is too tight for dual (or slow primary) describe.
 
-        Guards against slow-Gemma runs blowing the container time limit: once
-        elapsed time leaves less than reserve x remaining clips, remaining
-        describes go straight to the fallback model.
+        When dual describe is on, skip means single-model describe only.
+        Otherwise skip means go straight to VISION_FALLBACK_MODEL.
         """
-        if self.time_budget_s <= 0 or not _vision_fallback_model():
+        can_degrade = bool(_vision_fallback_model()) or (
+            dual_describe_enabled() and bool(resolve_vision_alt_model())
+        )
+        if self.time_budget_s <= 0 or not can_degrade:
             return False
         elapsed = time.monotonic() - self.run_start
         remaining_budget = self.time_budget_s - elapsed
@@ -837,6 +954,8 @@ def _log_config(ctx: _RunContext) -> None:
         f"frame_count_min={os.environ.get('FRAME_COUNT_MIN', '8')} "
         f"frame_count_max={os.environ.get('FRAME_COUNT_MAX', '24')} "
         f"api_timeout_s={os.environ.get('API_TIMEOUT_S', '45')} "
+        f"describe_dual={'on' if dual_describe_enabled() else 'off'} "
+        f"vision_alt={resolve_vision_alt_model() or 'none'} "
         f"vision_fallback={_vision_fallback_model() or 'none'} "
         f"time_budget_s={ctx.time_budget_s or 'off'} "
         f"judge_retry={'on' if get_int_env('JUDGE_RETRY', 0) else 'off'}",

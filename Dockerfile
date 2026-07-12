@@ -12,16 +12,19 @@ COPY prompts/ prompts/
 # (Track 2: "use your own credentials inside the container")
 ARG FIREWORKS_API_KEY
 ARG GOOGLE_API_KEY
-ARG VISION_MODEL=google-ai/gemma-4-26b-a4b-it
-ARG VISION_FALLBACK_MODEL=accounts/fireworks/models/minimax-m3
+ARG VISION_MODEL=accounts/fireworks/models/minimax-m3
+ARG VISION_ALT_MODEL=accounts/fireworks/models/qwen3p7-plus
+ARG VISION_FALLBACK_MODEL=accounts/fireworks/models/qwen3p7-plus
 ARG CAPTION_MODEL=accounts/fireworks/models/deepseek-v4-flash
 
 ENV FIREWORKS_API_KEY=${FIREWORKS_API_KEY}
 ENV GOOGLE_API_KEY=${GOOGLE_API_KEY}
 ENV VISION_MODEL=${VISION_MODEL}
+ENV VISION_ALT_MODEL=${VISION_ALT_MODEL}
 ENV VISION_FALLBACK_MODEL=${VISION_FALLBACK_MODEL}
 ENV CAPTION_MODEL=${CAPTION_MODEL}
 ENV CAPTION_MODEL_POOL=deepseek-v4-flash,deepseek-v4-flash
+ENV DESCRIBE_DUAL=1
 ENV PYTHONUNBUFFERED=1
 ENV PARALLEL_STYLES=1
 ENV OVERLAP_PIPELINE=1
