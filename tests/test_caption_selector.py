@@ -15,15 +15,20 @@ from src.results import CaptionResult
 
 class TestCaptionSelector:
     def test_friendly_placeholder_ranks_lowest(self):
+        from src.caption import _FRIENDLY_CAPTION_FAILURE
+
         good = "Waves roll toward the rocky shore like a slow-motion stampede. The foam goes nowhere."
-        friendly = "Something's clearly happening here, but the caption never quite came together."
+        friendly = _FRIENDLY_CAPTION_FAILURE["sarcastic"]
         assert rank_caption(good, "sarcastic")[0] > rank_caption(friendly, "sarcastic")[0]
         assert is_friendly_placeholder(friendly)
 
     def test_select_best_prefers_structural_pass(self):
+        from src.caption import _FRIENDLY_CAPTION_FAILURE
+
+        friendly = _FRIENDLY_CAPTION_FAILURE["humorous_non_tech"]
         candidates = [
             CaptionCandidate(
-                text="Something's clearly happening here, but the caption never quite came together.",
+                text=friendly,
                 model="accounts/fireworks/models/glm-5p1",
                 label="glm-5p1",
                 result=CaptionResult(text=None, error=None),

@@ -60,7 +60,7 @@ def rank_caption(
 ) -> tuple[int, str]:
     if is_friendly_placeholder(text):
         return 0, "friendly-placeholder"
-    ok, reason = score_caption(text, style)
+    ok, reason = score_caption(text, style, description=description or "")
     if ok:
         words = len(text.split())
         # Prefer captions near the prompt target (50 words), not ultra-short.

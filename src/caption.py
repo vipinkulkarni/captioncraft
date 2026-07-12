@@ -71,40 +71,56 @@ _PROCESS_FAILURE_PREFIX = PROCESS_FAILURE_PREFIX
 
 _FRIENDLY_DESCRIBE_FAILURE: dict[str, str] = {
     "formal": (
-        "The available footage did not provide enough visual detail for a complete scene description."
+        "The available footage did not provide enough visual detail for a complete "
+        "scene description. No reliable subjects or actions could be confirmed."
     ),
     "sarcastic": (
-        "The clip kept its secrets, offering too little to work with for a proper scene read."
+        "The clip kept its secrets, offering too little to work with for a proper "
+        "scene read. Even the obvious details stayed stubbornly out of reach."
     ),
     "humorous_tech": (
-        "Sparse frames left the describe pipeline empty—nothing reliable enough to commit to production."
+        "Sparse frames left the describe pipeline empty—nothing reliable enough to "
+        "commit. Production stayed dark with no deployable scene facts."
     ),
     "humorous_non_tech": (
-        "The clip was too stingy with details to pin down what was really going on."
+        "The clip was too stingy with details to pin down what was really going on. "
+        "It left more questions than anything you could describe with confidence."
     ),
 }
 _FRIENDLY_CAPTION_FAILURE: dict[str, str] = {
     "formal": (
-        "A scene unfolds in the video, though a styled caption could not be produced."
+        "A scene unfolds in the video, though a styled caption could not be produced. "
+        "The available details were insufficient for a finished style rewrite."
     ),
     "sarcastic": (
-        "Something happens in this clip, apparently—but a caption with the requested tone never showed up."
+        "Something happens in this clip, apparently—but a caption with the requested "
+        "tone never showed up. The rewrite step simply declined to finish the job."
     ),
     "humorous_tech": (
-        "The scene description compiled, but this styled caption deploy failed—no output shipped."
+        "The scene description compiled, but this styled caption deploy failed. "
+        "No output shipped past the style rewrite stage."
     ),
     "humorous_non_tech": (
-        "Something's clearly happening here, but the caption never quite came together."
+        "Something's clearly happening here, but the caption never quite came together. "
+        "The tone rewrite stalled before a finished pair of sentences landed."
     ),
 }
 _FRIENDLY_PROCESS_FAILURE: dict[str, str] = {
-    "formal": "This video clip could not be processed into captions with the requested styles.",
-    "sarcastic": "The pipeline looked at this task and quietly declined to cooperate.",
+    "formal": (
+        "This video clip could not be processed into captions with the requested styles. "
+        "The pipeline stopped before any finished captions were available."
+    ),
+    "sarcastic": (
+        "The pipeline looked at this task and quietly declined to cooperate. "
+        "No finished captions made it past the awkward silence."
+    ),
     "humorous_tech": (
-        "Processing hit an unhandled edge case—no usable captions made it to production."
+        "Processing hit an unhandled edge case—no usable captions made it to production. "
+        "The retry queue stayed empty after the hard fail."
     ),
     "humorous_non_tech": (
-        "This clip didn't cooperate, so no proper captions made it out the other side."
+        "This clip didn't cooperate, so no proper captions made it out the other side. "
+        "Whatever happened never turned into a finished write-up."
     ),
 }
 
