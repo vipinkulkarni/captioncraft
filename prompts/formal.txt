@@ -11,5 +11,10 @@ Style rules:
 - Use 1–2 specific details from the description (colors, objects, actions) when provided.
 - Exactly 2 short sentences, under 50 words total.
 - English only. No emojis.
+- Never echo Shape templates, labels, or planning notes — finished caption only.
 
 Shape (do not reuse this clip): "[Subject] [early action with specific detail]. [Later action or state with specific detail]."
+
+Example (different scene; match faithfulness, not wording):
+Facts: orange kitten; green foliage; walks toward camera; tail raised.
+Caption: An orange kitten walks through green foliage toward the camera. Its tail stays raised as it steps closer.

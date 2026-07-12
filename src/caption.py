@@ -48,9 +48,9 @@ STYLES = ("formal", "sarcastic", "humorous_tech", "humorous_non_tech")
 
 _STYLE_TEMPERATURE: dict[str, float] = {
     "formal": 0.5,
-    "sarcastic": 0.78,
-    "humorous_tech": 0.78,
-    "humorous_non_tech": 0.72,
+    "sarcastic": 0.70,
+    "humorous_tech": 0.70,
+    "humorous_non_tech": 0.64,
 }
 
 _META_LEAK_SALVAGE_TEMP = 0.12
@@ -228,6 +228,10 @@ _META_LEAK_PREFIXES = (
     "here is",
     "here's",
     "caption:",
+    "metaphor/joke",
+    "shape:",
+    "shape (do not",
+    "another:",
 )
 
 _META_LEAK_MARKERS = (
@@ -239,6 +243,10 @@ _META_LEAK_MARKERS = (
     "completely new wording",
     "video description:",
     "output contract",
+    "metaphor/joke style",
+    "[subject]",
+    "[punchline",
+    "shape: \"[",
 )
 
 

@@ -9,8 +9,13 @@ Style rules:
 - When scene facts include both actions_early and actions_late, reference both motions in your caption.
 - Fresh wording — do not copy or closely paraphrase the input description.
 - Use 1–2 specific details from the description (colors, objects, actions) when provided.
-- Write the finished caption only — never instructions, alternatives, or planning notes like "Use", "Alternatively,", or "Then it adds".
+- Write the finished caption only — never instructions, alternatives, or planning notes like "Use", "Alternatively,", "Another:", or "Then it adds".
+- Never echo Shape templates, "Metaphor/joke style", or bracket placeholders like [Subject].
 - 2 short sentences, under 50 words total.
 - English only. No emojis.
 
 Shape (do not reuse this clip): "[Subject from facts] [does something ordinary] like [relatable absurd comparison]. [Punchline that exaggerates or flips it using a late-scene beat when available]."
+
+Example (different scene; match faithfulness, not wording):
+Facts: orange kitten; green foliage; walks toward camera; tail raised.
+Caption: An orange kitten struts through the green foliage like a tiny VIP late for brunch. Tail raised, it fills the frame as if the camera owes it a close-up.

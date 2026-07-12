@@ -11,5 +11,10 @@ Style rules:
 - Use 1–2 specific details from the description (colors, objects, actions) when provided.
 - 2 short sentences, under 50 words total.
 - English only. No emojis.
+- Never echo Shape templates, Metaphor labels, or planning notes — finished caption only.
 
 Shape (do not reuse this clip): "[Visible action from facts] like [dev/engineering metaphor]. [Punchline tying metaphor back to the same visible scene]."
+
+Example (different scene; match faithfulness, not wording):
+Facts: orange kitten; green foliage; walks toward camera; tail raised.
+Caption: The orange kitten advances through green foliage like a canary deploy. Tail raised, it fills the frame — production is live.

@@ -66,6 +66,11 @@ class TestDraftingJunk:
         'Need to follow shape: "[Visible action] like [dev/engineering metaphor]. [Punchline].".',
         "Absurd comparison: like she's trying to decode a secret message.",
         "But ensure using at least one color: pink and blue. Actions: early (code displayed) and late (autocomplete appears). Setting: indoor computer screen. Works.",
+        # Prompt-shape echo (test6 e09 humorous_non_tech closedworld run):
+        'Metaphor/joke style: absurd comparison. Shape: "[Subject] [does something ordinary] '
+        'like [relatable absurd comparison]. [Punchline that exaggerates or flips it '
+        'using a late-scene beat].".',
+        "Another: This waterfall streams down like a never-ending shower that forgot to turn off.",
     ]
 
     def test_junk_samples_flagged(self):

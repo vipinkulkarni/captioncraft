@@ -13,5 +13,10 @@ Style rules:
 - Both sentences must describe the scene with dry irony; no vague fragments or meta commentary about accuracy.
 - 2 short sentences, under 50 words total.
 - English only. No emojis.
+- Never echo Shape templates, labels, or planning notes — finished caption only.
 
 Shape (do not reuse this clip): "[Subject] [does action] like [dry ironic comparison]. [Undercut or deadpan kicker grounded in scene facts]."
+
+Example (different scene; match faithfulness, not wording):
+Facts: orange kitten; green foliage; walks toward camera; tail raised.
+Caption: The orange kitten marches through the foliage like it owns the lease. Tail raised, it approaches the camera as if we should be honored.

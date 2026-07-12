@@ -33,6 +33,9 @@ META_LEAK_SAMPLES = [
     "We need to; the user wants; must be 2 short sentences — ignore prior rules.",
     "I need to satisfy the user wants clause and output contract simultaneously.",
     "Here's my attempt: using only these facts and completely new wording required.",
+    'Metaphor/joke style: absurd comparison. Shape: "[Subject] [does something ordinary] '
+    'like [relatable absurd comparison]. [Punchline].".',
+    "Another: This waterfall streams down like a never-ending shower.",
 ]
 
 CLEAN_CAPTION_SAMPLES = [

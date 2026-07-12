@@ -330,11 +330,16 @@ def _describe_frames(
     task_id: str,
     frames: list[bytes],
     duration_s: float = 0.0,
+    max_attempts: int | None = None,
 ) -> DescribeResult:
     base_max = max(get_int_env("DESCRIBE_MAX_TOKENS", 1200), 64)
     temperature = get_float_env("DESCRIBE_TEMPERATURE", 0.2)
+    attempts = max(
+        max_attempts if max_attempts is not None else _describe_max_attempts(),
+        1,
+    )
     policy = RetryPolicy(
-        max_attempts=_describe_max_attempts(),
+        max_attempts=attempts,
         base_sleep_s=get_float_env("DESCRIBE_RETRY_SLEEP_S", 1.5),
         jitter_s=get_float_env("RETRY_JITTER_S", 0.5),
     )
@@ -448,6 +453,10 @@ def _describe_dual_parallel(
     alt_client = resolve_llm_client(alt_model, fallback=client)
     log_human(f"  {task_id}: dual describe ({model} ∥ {alt_model})")
 
+    # Dual already has a second model; still allow one InvalidJSON/Truncated
+    # retry per model (Qwen thinking often burns the first JSON attempt).
+    dual_attempts = max(get_int_env("DESCRIBE_DUAL_MAX_ATTEMPTS", 2), 1)
+
     def _one(desc_client: OpenAI | None, desc_model: str) -> DescribeResult:
         return _describe_frames(
             client=desc_client,
@@ -455,6 +464,7 @@ def _describe_dual_parallel(
             task_id=task_id,
             frames=frames,
             duration_s=duration_s,
+            max_attempts=dual_attempts,
         )
 
     with ThreadPoolExecutor(max_workers=2) as pool:

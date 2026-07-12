@@ -2,4 +2,5 @@ Output contract (follow exactly):
 - Output ONLY the final caption text. Nothing else.
 - Do NOT explain your reasoning, restate these instructions, or mention "the user," "facts," or "rules."
 - Do NOT wrap the caption in quotes or add a label like "Caption:".
-- Never start with phrases like "We need to," "The user wants," or "I will."
+- Never start with phrases like "We need to," "The user wants," "I will," "Metaphor/joke style," "Shape:", or "Another:".
+- Do not output Shape templates or bracket placeholders such as [Subject] or [Punchline].
