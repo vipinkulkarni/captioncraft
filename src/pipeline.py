@@ -35,7 +35,13 @@ from src.describe_judge import (
 )
 from src.describe_schema import parse_describe_json
 from src.describe_quality import describe_quality_issue
-from src.env import get_float_env, get_frame_config, get_int_env, resolve_frame_count
+from src.env import (
+    get_float_env,
+    get_frame_config,
+    get_int_env,
+    resolve_frame_count,
+    resolve_frame_width,
+)
 from src.results import DescribeResult, ProcessError, describe_error_from_reason
 from src.retry import RetryPolicy, call_with_retry
 from src.run_log import emit_config_event, emit_event, log_human
@@ -320,6 +326,9 @@ def extract_frames_jpeg(
     effective_duration = max(duration_s, max(duration_hint_s, 0.0))
     if max_frames is None:
         max_frames = resolve_frame_count(effective_duration)
+    # Short clips use FRAME_SHORT_WIDTH (e.g. 512); long clips keep FRAME_WIDTH.
+    resolved = resolve_frame_width(effective_duration)
+    encode_width = max(width, resolved) if width > 0 else resolved
 
     frames: list[bytes] = []
     mode = _frame_mode()
@@ -339,7 +348,7 @@ def extract_frames_jpeg(
             ok, frame = cap.read()
             if not ok or frame is None:
                 continue
-            frames.append(_encode_frame_jpeg(frame, width))
+            frames.append(_encode_frame_jpeg(frame, encode_width))
     else:
         times_ms = _frame_times_ms(effective_duration, max_frames)
         if times_ms:
@@ -348,13 +357,13 @@ def extract_frames_jpeg(
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     continue
-                frames.append(_encode_frame_jpeg(frame, width))
+                frames.append(_encode_frame_jpeg(frame, encode_width))
         else:
             for _ in range(max_frames):
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     break
-                frames.append(_encode_frame_jpeg(frame, width))
+                frames.append(_encode_frame_jpeg(frame, encode_width))
 
     cap.release()
 

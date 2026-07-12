@@ -26,6 +26,22 @@ def test_list_judge_failures():
     assert list_judge_failures(clip, min_score=0.8) == [("e01", "sarcastic")]
 
 
+def test_list_judge_failures_meta_leak():
+    clip = ClipJudgeResult(
+        task_id="v8",
+        captions={
+            "humorous_non_tech": CaptionJudgeScore(
+                style="humorous_non_tech",
+                style_match=0.95,
+                accuracy=0.95,
+                meta_leak=True,
+                issue="but careful drafting",
+            ),
+        },
+    )
+    assert list_judge_failures(clip, min_score=0.8) == [("v8", "humorous_non_tech")]
+
+
 def test_list_judge_failures_regex(monkeypatch):
     monkeypatch.setenv("JUDGE_RETRY_REGEX", "1")
     clip = ClipJudgeResult(
@@ -71,6 +87,19 @@ def test_judge_feedback_nudge_includes_issue():
     assert "style_match=0.60" in nudge
     assert "invented birds" in nudge
     assert "do not invent" in nudge
+
+
+def test_judge_feedback_nudge_meta_leak():
+    score = CaptionJudgeScore(
+        style="humorous_non_tech",
+        accuracy=0.2,
+        style_match=0.2,
+        meta_leak=True,
+        issue="but careful drafting",
+    )
+    nudge = judge_feedback_nudge(score)
+    assert "meta-leak" in nudge.lower() or "drafting" in nudge.lower()
+    assert "finished caption" in nudge.lower()
 
 
 def test_apply_vision_accuracy_lowers_text_score(monkeypatch):

@@ -5,7 +5,9 @@ from src.caption_vision_judge import (
     aggregate_vision_panel,
     parse_caption_vision_accuracy_response,
     caption_vision_accuracy_enabled,
+    caption_vision_accuracy_mode,
     resolve_caption_vision_judge_panel,
+    vision_accuracy_target_styles,
 )
 
 
@@ -42,8 +44,38 @@ def test_parse_regex_fallback():
 def test_vision_accuracy_off_by_default(monkeypatch):
     monkeypatch.delenv("CAPTION_VISION_ACCURACY", raising=False)
     assert caption_vision_accuracy_enabled() is False
+    assert caption_vision_accuracy_mode() == "off"
     monkeypatch.setenv("CAPTION_VISION_ACCURACY", "1")
     assert caption_vision_accuracy_enabled() is True
+    assert caption_vision_accuracy_mode() == "all"
+
+
+def test_vision_accuracy_humor_and_fail_modes(monkeypatch):
+    styles = ["formal", "sarcastic", "humorous_tech", "humorous_non_tech"]
+    monkeypatch.setenv("CAPTION_VISION_ACCURACY", "humor")
+    assert caption_vision_accuracy_mode() == "humor"
+    assert vision_accuracy_target_styles(styles) == [
+        "sarcastic",
+        "humorous_tech",
+        "humorous_non_tech",
+    ]
+    monkeypatch.setenv("CAPTION_VISION_ACCURACY", "fail")
+    assert vision_accuracy_target_styles(
+        styles, failing_styles={"formal", "sarcastic"}
+    ) == ["formal", "sarcastic"]
+    monkeypatch.setenv("CAPTION_VISION_ACCURACY", "0")
+    assert vision_accuracy_target_styles(styles) == []
+
+
+def test_resolve_frame_width_short_vs_long(monkeypatch):
+    from src.env import resolve_frame_width
+
+    monkeypatch.setenv("FRAME_WIDTH", "384")
+    monkeypatch.setenv("FRAME_SHORT_WIDTH", "512")
+    monkeypatch.setenv("FRAME_LONG_DURATION_S", "60")
+    assert resolve_frame_width(30.0) == 512
+    assert resolve_frame_width(90.0) == 384
+    assert resolve_frame_width(0.0) == 384
 
 
 def test_aggregate_panel_mean_and_disagreement(monkeypatch):

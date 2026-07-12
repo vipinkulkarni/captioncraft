@@ -37,6 +37,7 @@ _SCORE_FIELD_RE = re.compile(
     re.I,
 )
 _ISSUE_FIELD_RE = re.compile(r'"issue"\s*:\s*"(.*?)"', re.I | re.S)
+_META_LEAK_FIELD_RE = re.compile(r'"meta_leak"\s*:\s*(true|false)', re.I)
 _DISTINCTNESS_RE = re.compile(
     r'"cross_style_distinctness"\s*:\s*([0-9]*\.?[0-9]+)',
     re.I,
@@ -72,6 +73,7 @@ class CaptionJudgeScore:
     accuracy: float
     style_match: float
     issue: str = ""
+    meta_leak: bool = False
     skipped: bool = False
     skip_reason: str = ""
 
@@ -82,6 +84,8 @@ class CaptionJudgeScore:
 
     def passes(self, *, min_score: float) -> bool:
         if self.skipped:
+            return False
+        if self.meta_leak:
             return False
         threshold = resolve_judge_min_score(min_score)
         return self.accuracy >= threshold and self.style_match >= threshold
@@ -168,6 +172,8 @@ class JudgeFileResult:
                         if getattr(score, name) < resolve_judge_min_score(self.min_score)
                     ]
                     detail = score.issue or ", ".join(weak)
+                    if score.meta_leak and "meta" not in detail.lower():
+                        detail = f"meta-leak; {detail}" if detail else "meta-leak"
                     dims = (
                         f"accuracy={score.accuracy:.2f} "
                         f"style_match={score.style_match:.2f}"
@@ -261,6 +267,16 @@ def _median_float(values: list[float]) -> float:
     return round((ordered[mid - 1] + ordered[mid]) / 2.0, 3)
 
 
+def _parse_bool_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return False
+
+
 def _score_from_payload(style: str, entry: dict[str, Any]) -> CaptionJudgeScore | None:
     # Accept legacy "style_fit" key from older payloads; store as style_match.
     style_raw = entry.get("style_match", entry.get("style_fit"))
@@ -268,11 +284,21 @@ def _score_from_payload(style: str, entry: dict[str, Any]) -> CaptionJudgeScore 
     style_match = _parse_unit_score(style_raw)
     if accuracy is None or style_match is None:
         return None
+    meta_leak = _parse_bool_flag(entry.get("meta_leak"))
+    issue = str(entry.get("issue") or "").strip()
+    if meta_leak:
+        accuracy = min(accuracy, 0.2)
+        style_match = min(style_match, 0.2)
+        if not issue:
+            issue = "meta-leak"
+        elif "meta" not in issue.lower():
+            issue = f"meta-leak; {issue}"
     return CaptionJudgeScore(
         style=style,
         accuracy=accuracy,
         style_match=style_match,
-        issue=str(entry.get("issue") or "").strip(),
+        issue=issue,
+        meta_leak=meta_leak,
     )
 
 
@@ -330,11 +356,21 @@ def aggregate_clip_judges(per_judge: dict[str, ClipJudgeResult]) -> ClipJudgeRes
             continue
 
         issues = [s.issue for s in active_scores if s.issue]
+        meta_leak = any(s.meta_leak for s in active_scores)
+        accuracy = _median_float([s.accuracy for s in active_scores])
+        style_match = _median_float([s.style_match for s in active_scores])
+        issue = "; ".join(dict.fromkeys(issues))[:240]
+        if meta_leak:
+            accuracy = min(accuracy, 0.2)
+            style_match = min(style_match, 0.2)
+            if not issue:
+                issue = "meta-leak"
         aggregated.captions[style] = CaptionJudgeScore(
             style=style,
-            accuracy=_median_float([s.accuracy for s in active_scores]),
-            style_match=_median_float([s.style_match for s in active_scores]),
-            issue="; ".join(dict.fromkeys(issues))[:240],
+            accuracy=accuracy,
+            style_match=style_match,
+            issue=issue,
+            meta_leak=meta_leak,
         )
 
     distinctness_vals = [
@@ -359,6 +395,7 @@ def _auto_skip_caption(text: str, style: str) -> CaptionJudgeScore | None:
         accuracy=0.0,
         style_match=0.0,
         issue=reason,
+        meta_leak=reason == "meta-leak",
         skipped=True,
         skip_reason=reason,
     )
@@ -429,6 +466,9 @@ def _payload_from_lenient_json(raw: str) -> dict[str, Any] | None:
         fields["style_match"] = fields["style_fit"]
     issue_match = _ISSUE_FIELD_RE.search(text)
     fields["issue"] = issue_match.group(1).strip() if issue_match else ""
+    meta_match = _META_LEAK_FIELD_RE.search(text)
+    if meta_match:
+        fields["meta_leak"] = meta_match.group(1).lower() == "true"
     return fields
 
 

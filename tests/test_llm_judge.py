@@ -148,6 +148,32 @@ class TestParseStyleJudgeResponse:
         assert score is None
         assert "0, 1" in err
 
+    def test_meta_leak_clamps_and_flags(self):
+        raw = json.dumps(
+            {
+                "accuracy": 0.95,
+                "style_match": 0.9,
+                "meta_leak": True,
+                "issue": "planning prose",
+            }
+        )
+        score, err = parse_style_judge_response(raw, style="humorous_non_tech")
+        assert err == ""
+        assert score is not None
+        assert score.meta_leak
+        assert score.accuracy <= 0.2
+        assert score.style_match <= 0.2
+        assert "meta-leak" in score.issue.lower()
+        assert not score.passes(min_score=0.8)
+
+    def test_meta_leak_from_truncated_json(self):
+        raw = '{"accuracy":0.9,"style_match":0.9,"meta_leak":true,"issue":"revised'
+        score, err = parse_style_judge_response(raw, style="formal")
+        assert err == ""
+        assert score is not None
+        assert score.meta_leak
+        assert not score.passes(min_score=0.8)
+
 
 class TestDistinctnessUnitScale:
     def test_parses_unit_distinctness(self):
@@ -188,6 +214,16 @@ class TestJudgePassLogic:
             accuracy=1.0,
             skipped=True,
             skip_reason="error",
+        )
+        assert not score.passes(min_score=0.8)
+
+    def test_meta_leak_fails_even_with_high_scores(self):
+        score = CaptionJudgeScore(
+            style="formal",
+            style_match=1.0,
+            accuracy=1.0,
+            meta_leak=True,
+            issue="drafting",
         )
         assert not score.passes(min_score=0.8)
 

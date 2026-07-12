@@ -105,10 +105,46 @@ def resolve_caption_vision_judge_panel() -> list[str]:
     return [primary]
 
 
-def caption_vision_accuracy_enabled() -> bool:
-    """Pipeline flag: only on when explicitly enabled after composition-gap diagnostic."""
-    return get_int_env("CAPTION_VISION_ACCURACY", 0) == 1
+def caption_vision_accuracy_mode() -> str:
+    """off | all | humor | fail — see CAPTION_VISION_ACCURACY env."""
+    raw = os.environ.get("CAPTION_VISION_ACCURACY", "0").strip().lower()
+    if raw in ("", "0", "off", "false", "no"):
+        return "off"
+    if raw in ("1", "all", "on", "true", "yes"):
+        return "all"
+    if raw in ("humor", "humour"):
+        return "humor"
+    if raw in ("fail", "failures", "text-fail", "text_fail"):
+        return "fail"
+    return "off"
 
+
+def caption_vision_accuracy_enabled() -> bool:
+    """Pipeline flag: vision-backed accuracy for judge+retry (selective modes OK)."""
+    return caption_vision_accuracy_mode() != "off"
+
+
+_HUMOR_VISION_STYLES = frozenset({"sarcastic", "humorous_tech", "humorous_non_tech"})
+
+
+def vision_accuracy_target_styles(
+    styles: list[str] | set[str] | tuple[str, ...],
+    *,
+    failing_styles: set[str] | None = None,
+) -> list[str]:
+    """Which styles should get a vision accuracy pass under the current mode."""
+    mode = caption_vision_accuracy_mode()
+    ordered = [s for s in styles if s]
+    if mode == "off":
+        return []
+    if mode == "all":
+        return ordered
+    if mode == "humor":
+        return [s for s in ordered if s in _HUMOR_VISION_STYLES]
+    if mode == "fail":
+        fails = failing_styles or set()
+        return [s for s in ordered if s in fails]
+    return []
 
 def vision_judge_min_confidence() -> float:
     return min(max(get_float_env("CAPTION_VISION_JUDGE_MIN_CONFIDENCE", 0.7), 0.0), 1.0)

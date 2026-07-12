@@ -20,9 +20,10 @@ Return ONLY a single JSON object (no markdown, no commentary) with this exact sc
 
 Rules:
 - Describe only what is clearly visible. Do not guess or invent details.
+- If uncertain about a species, brand, or object identity, use a generic label (bird, person, screen) — never upgrade a guess to a specific name.
 - on_screen_text: copy ONLY clearly readable characters from the frames. Use [] if nothing is legible. Never invent code, menus, or UI labels.
 - Do not invent on-screen text, menus, code, or UI labels unless they are clearly readable in the frames.
-- Animals with multiple coat colors must list ALL colors in subjects[].colors (e.g. orange-and-white, not just orange).
+- Animals with multiple coat colors must list ALL colors in subjects[].colors (e.g. orange-and-white, not just orange). Prefer distinctive plumage/fur markings over vague labels when clearly visible.
 - People: include precise clothing colors in subjects[].colors when visible.
 - camera must describe how the viewpoint moves (pan left/right, zoom out, static, etc.) when visible.
 - actions_early and actions_late must differ when motion changes; if nothing changes, say so explicitly.

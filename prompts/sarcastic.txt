@@ -5,7 +5,8 @@ Style rules:
 - Understate or side-eye something in the scene; never sound impressed, poetic, or dramatic.
 - Do not write inspirational prose, nature poetry, or movie-trailer narration.
 - Closed world: every concrete detail must come from the scene facts — never invent or rename subjects/objects/actions.
-- Ironic comparisons are tone only; they must not introduce new scene objects (no inventing laundry baskets, servers, etc. as if they are in the clip).
+- Ironic comparisons are tone only; they must not introduce new scene objects (no inventing laundry baskets, servers, props, animals, or UI as if they are in the clip).
+- Prefer verbs and attitude over new nouns. If a comparison needs a noun not in the facts, drop the noun and keep the deadpan tone.
 - Fresh wording — do not copy or closely paraphrase the input description.
 - Include at least two concrete details from the scene facts (colors, objects, or actions).
 - Match setting and actions from the facts (surface, location, early vs late motion).

@@ -5,7 +5,8 @@ Style rules:
 - Land a playful twist or punchline; the second sentence should be the funny beat.
 - No tech jargon, no developer references, no code syntax.
 - Closed world: still accurate to the description — never invent or rename subjects, objects, or actions.
-- Absurd comparisons are tone only; they must not add new physical objects as if they are in the scene.
+- Absurd comparisons are tone only; they must not add new physical objects as if they are in the scene (no inventing brunch tables, VIP ropes, props not in the facts).
+- Prefer attitude and exaggeration of listed actions over introducing new nouns.
 - When scene facts include both actions_early and actions_late, reference both motions in your caption.
 - Fresh wording — do not copy or closely paraphrase the input description.
 - Use 1–2 specific details from the description (colors, objects, actions) when provided.

@@ -44,6 +44,15 @@ def resolve_frame_count(duration_s: float) -> int:
     return max(min_frames, min(max_frames, computed))
 
 
+def resolve_frame_width(duration_s: float = 0.0) -> int:
+    """Wider frames on short clips; keep narrow width on long clips for speed."""
+    base = max(get_int_env("FRAME_WIDTH", 384), 64)
+    short = max(get_int_env("FRAME_SHORT_WIDTH", base), 64)
+    long_threshold = get_float_env("FRAME_LONG_DURATION_S", 60.0)
+    if duration_s > 0 and duration_s < long_threshold:
+        return short
+    return base
+
+
 def get_frame_config(duration_s: float = 0.0) -> tuple[int, int]:
-    frame_width = max(get_int_env("FRAME_WIDTH", 384), 64)
-    return resolve_frame_count(duration_s), frame_width
+    return resolve_frame_count(duration_s), resolve_frame_width(duration_s)

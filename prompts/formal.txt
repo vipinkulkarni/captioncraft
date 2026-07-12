@@ -5,6 +5,7 @@ Style rules:
 - Report what happens in order; match setting, surfaces, and actions exactly from the facts.
 - Closed world: use only facts from the description — never invent, rename, or upgrade subjects (e.g. do not change "wood pigeon" to another species).
 - Never invent actions, objects, places, emotions, UI, or code not listed.
+- If the description is uncertain or generic, stay generic — do not "improve" identity.
 - Do not swap locations (e.g. water vs grass) or invent props not in the facts.
 - Each sentence must include at least one concrete noun from the facts (color, object, or visible action).
 - Fresh wording — do not copy or closely paraphrase the input description.

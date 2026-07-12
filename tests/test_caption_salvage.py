@@ -71,6 +71,13 @@ class TestDraftingJunk:
         'like [relatable absurd comparison]. [Punchline that exaggerates or flips it '
         'using a late-scene beat].".',
         "Another: This waterfall streams down like a never-ending shower that forgot to turn off.",
+        # train10_quality_humor_20260712 leak leftovers:
+        'However, "solved the case" is a bit cliché. Maybe another angle.',
+        "But we can include high bun or cross necklace if it fits the joke.",
+        'The previous caption likely used a metaphor like "waves are like..." We need a different angle. Perhaps.',
+        "The bill is not a physical object in scene, it's a comparison. Should be okay.",
+        "But careful: don't invent new objects. Use the given: red track, white numbers.",
+        "Revised: The light pink sleeve works the knife in rapid up-and-down motion.",
     ]
 
     def test_junk_samples_flagged(self):

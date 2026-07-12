@@ -6,7 +6,7 @@ import json
 import os
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from openai import OpenAI
@@ -20,8 +20,10 @@ from src.caption import (
 from src.caption_selector import generate_best_of_n_caption
 from src.caption_vision_judge import (
     caption_vision_accuracy_enabled,
+    caption_vision_accuracy_mode,
     judge_caption_vision_accuracy,
     resolve_caption_vision_judge_model,
+    vision_accuracy_target_styles,
 )
 from src.env import get_float_env, get_int_env
 from src.llm_judge import (
@@ -108,6 +110,13 @@ def style_still_fails(
 
 def judge_feedback_nudge(score: CaptionJudgeScore) -> str:
     issue = score.issue or score.skip_reason or "did not meet accuracy/style bar"
+    if score.meta_leak:
+        return (
+            f"Previous output was drafting/meta-leak (not a finished caption). "
+            f"Issue: {issue}. "
+            "Output ONLY the finished caption in the requested tone — no planning, "
+            "self-critique, 'but careful', 'revised:', or instructions about writing."
+        )
     return (
         f"Previous caption scored accuracy={score.accuracy:.2f} "
         f"style_match={score.style_match:.2f}. Issue: {issue}. "
@@ -123,20 +132,42 @@ def _apply_vision_accuracy(
     frames: list[bytes],
     client: OpenAI,
     model: str,
+    styles: list[str] | None = None,
 ) -> None:
     """Overwrite text accuracy with min(text, vision) when vision judge succeeds."""
-    for style, score in list(clip.captions.items()):
-        if score.skipped:
+    target = styles if styles is not None else list(clip.captions.keys())
+    work: list[tuple[str, CaptionJudgeScore, str]] = []
+    for style in target:
+        score = clip.captions.get(style)
+        if score is None or score.skipped:
             continue
         text = captions.get(style, "")
         if not text.strip():
             continue
+        work.append((style, score, text))
+
+    if not work:
+        return
+
+    def _one(style: str, score: CaptionJudgeScore, text: str):
         vis = judge_caption_vision_accuracy(
             client=client,
             model=model,
             frames_jpeg=frames,
             caption=text,
         )
+        return style, score, vis
+
+    results = []
+    if len(work) == 1:
+        results.append(_one(*work[0]))
+    else:
+        with ThreadPoolExecutor(max_workers=min(len(work), 3)) as pool:
+            futs = [pool.submit(_one, *item) for item in work]
+            for fut in as_completed(futs):
+                results.append(fut.result())
+
+    for style, score, vis in results:
         if not vis.ok:
             log_human(
                 f"judge retry: vision accuracy skip {clip.task_id}/{style} "
@@ -150,10 +181,20 @@ def _apply_vision_accuracy(
             )
             continue
         if vis.accuracy < score.accuracy:
+            # Mild 0.85-style demotions create retry storms without helping quality.
+            demote_max = get_float_env("CAPTION_VISION_DEMOTE_MAX", 0.75)
+            if vis.accuracy >= demote_max:
+                log_human(
+                    f"judge retry: vision accuracy soft {clip.task_id}/{style} "
+                    f"{score.accuracy:.2f}->{vis.accuracy:.2f} (no demote ≥{demote_max:.2f})"
+                )
+                continue
             note = vis.issue or "vision accuracy below text accuracy"
             merged_issue = score.issue
             if note:
-                merged_issue = f"{merged_issue}; vision: {note}" if merged_issue else f"vision: {note}"
+                merged_issue = (
+                    f"{merged_issue}; vision: {note}" if merged_issue else f"vision: {note}"
+                )
             clip.captions[style] = CaptionJudgeScore(
                 style=style,
                 accuracy=vis.accuracy,
@@ -327,14 +368,34 @@ class PipelinedJudgeRetry:
             parallel_styles=self._parallel_styles,
         )
         frames = self._frames_by_task.get(task_id) or []
+        caption_map = {str(k): str(v) for k, v in captions.items()}
         if self._vision_accuracy and frames:
-            _apply_vision_accuracy(
-                clip=clip,
-                captions={str(k): str(v) for k, v in captions.items()},
-                frames=frames,
-                client=self._get_judge_client(),
-                model=self._vision_judge_model,
+            text_failures = {
+                style
+                for _tid, style in list_judge_failures(
+                    clip,
+                    min_score=self._min_score,
+                    captions=caption_map,
+                )
+            }
+            target_styles = vision_accuracy_target_styles(
+                list(clip.captions.keys()),
+                failing_styles=text_failures,
             )
+            if target_styles:
+                log_human(
+                    f"judge retry: vision accuracy mode="
+                    f"{caption_vision_accuracy_mode()} "
+                    f"styles={','.join(target_styles)}"
+                )
+                _apply_vision_accuracy(
+                    clip=clip,
+                    captions=caption_map,
+                    frames=frames,
+                    client=self._get_judge_client(),
+                    model=self._vision_judge_model,
+                    styles=target_styles,
+                )
         passing = clip.passing_styles(min_score=self._min_score)
         log_human(
             f"judge retry: {task_id} -> {passing}/{clip.total_styles()} pass"

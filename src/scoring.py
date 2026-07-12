@@ -89,6 +89,8 @@ def is_structural_failure(text: str) -> tuple[bool, str]:
         return True, "error"
     if text.lower().startswith("video caption ("):
         return True, "placeholder"
+    if is_drafting_junk(text):
+        return True, "meta-leak"
     return False, ""
 
 
