@@ -29,8 +29,18 @@ _DEFAULT_CAPTION_MODEL = "accounts/fireworks/models/deepseek-v4-flash"
 _DEFAULT_VISION_FALLBACK = "accounts/fireworks/models/minimax-m3"
 
 
+def _use_env_models() -> bool:
+    """Opt-in: honor VISION_MODEL/CAPTION_MODEL from secrets (.env). Default = Docker stack."""
+    return _env("DEMO_USE_ENV_MODELS") == "1"
+
+
 def _apply_demo_env() -> None:
     """Align with Docker agent caption stack; skip batch-only judge for single-clip demo."""
+    # Pin models to submission defaults so stale Streamlit secrets (e.g. Gemma) cannot drift the demo.
+    if not _use_env_models():
+        os.environ["VISION_MODEL"] = _DEFAULT_VISION_MODEL
+        os.environ["CAPTION_MODEL"] = _DEFAULT_CAPTION_MODEL
+        os.environ["VISION_FALLBACK_MODEL"] = _DEFAULT_VISION_FALLBACK
     os.environ.setdefault("JUDGE_RETRY", "0")
     os.environ.setdefault("STYLE_JSON_MODE", "1")
     os.environ.setdefault("CAPTION_MODEL_POOL", "deepseek-v4-flash")
@@ -47,15 +57,21 @@ def _apply_demo_env() -> None:
 
 
 def _default_vision_model() -> str:
-    return _env("VISION_MODEL") or _DEFAULT_VISION_MODEL
+    if _use_env_models():
+        return _env("VISION_MODEL") or _DEFAULT_VISION_MODEL
+    return _DEFAULT_VISION_MODEL
 
 
 def _default_caption_model() -> str:
-    return _env("CAPTION_MODEL") or _DEFAULT_CAPTION_MODEL
+    if _use_env_models():
+        return _env("CAPTION_MODEL") or _DEFAULT_CAPTION_MODEL
+    return _DEFAULT_CAPTION_MODEL
 
 
 def _default_vision_fallback() -> str:
-    return _env("VISION_FALLBACK_MODEL") or _DEFAULT_VISION_FALLBACK
+    if _use_env_models():
+        return _env("VISION_FALLBACK_MODEL") or _DEFAULT_VISION_FALLBACK
+    return _DEFAULT_VISION_FALLBACK
 
 
 def _pretty_model(model: str) -> str:

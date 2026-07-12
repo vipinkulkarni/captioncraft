@@ -1,78 +1,23 @@
-name: Docker publish
+name: Docker smoke (no rebuild)
 
+# Stand-in for local Docker: pull public GHCR image and run Track 2 contract.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
+    inputs:
+      image_tag:
+        description: "Image tag to smoke (latest or sha-...)"
+        required: true
+        default: "latest"
 
 permissions:
   contents: read
-  packages: write
+  packages: read
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.image_tag }}
 
 jobs:
-  unit-test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install -r requirements-dev.txt
-
-      - name: Run unit tests
-        run: python -m pytest tests/ -q
-
-  build-and-push:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest
-            type=sha
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            FIREWORKS_API_KEY=${{ secrets.FIREWORKS_API_KEY }}
-            GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
-            VISION_MODEL=accounts/fireworks/models/kimi-k2p6
-            VISION_FALLBACK_MODEL=accounts/fireworks/models/minimax-m3
-            CAPTION_MODEL=accounts/fireworks/models/deepseek-v4-flash
-
-  smoke-test:
-    needs: build-and-push
+  smoke:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -81,16 +26,14 @@ jobs:
       - name: Anonymous pull (judge-like)
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/${{ github.repository }}:latest"
           echo "Pulling ${IMAGE} without registry login..."
           docker pull "${IMAGE}"
           docker image inspect "${IMAGE}" --format 'Id={{.Id}} Arch={{.Architecture}} Size={{.Size}}'
 
-      - name: Run container smoke test
+      - name: Run container (Track 2 mounts)
         id: run
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/${{ github.repository }}:latest"
           mkdir -p output
           START=$(date +%s)
           set +e
@@ -114,7 +57,7 @@ jobs:
             exit 1
           fi
 
-      - name: Validate results.json schema
+      - name: Validate results.json
         run: |
           python3 - <<'PY'
           import json
@@ -132,7 +75,7 @@ jobs:
               print("results.json must be a non-empty array", file=sys.stderr)
               sys.exit(1)
 
-          required_styles = {"formal", "sarcastic", "humorous_tech", "humorous_non_tech"}
+          required = {"formal", "sarcastic", "humorous_tech", "humorous_non_tech"}
           fail_markers = (
               re.compile(r"failed to (describe|caption|process)", re.I),
               re.compile(r"never showed up", re.I),
@@ -145,7 +88,7 @@ jobs:
               if not task_id or not isinstance(captions, dict):
                   print(f"Invalid item: {item}", file=sys.stderr)
                   sys.exit(1)
-              missing = required_styles - set(captions)
+              missing = required - set(captions)
               if missing:
                   print(f"{task_id} missing styles: {missing}", file=sys.stderr)
                   sys.exit(1)
@@ -157,7 +100,7 @@ jobs:
                       warnings += 1
                       print(f"WARN placeholder-like: {task_id}/{style}: {text[:120]}")
 
-          print(f"OK: {len(data)} tasks, all styles present and non-empty")
+          print(f"OK: {len(data)} tasks, all styles present")
           if warnings:
               print(f"WARN: {warnings} placeholder-like captions (accuracy risk)")
           PY
@@ -165,7 +108,7 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          echo "### Publish smoke" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Image: \`ghcr.io/${{ github.repository }}:latest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Docker smoke" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: \`${{ env.IMAGE }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Exit: \`${{ steps.run.outputs.exit_code }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Wall: \`${{ steps.run.outputs.elapsed_s }}s\` / 600s cap" >> "$GITHUB_STEP_SUMMARY"
