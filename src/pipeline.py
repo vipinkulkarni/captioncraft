@@ -231,42 +231,51 @@ def _scene_change_indices(
     fps: float,
     max_frames: int,
 ) -> list[int]:
-    """Pick midpoints of histogram-change segments (CineScribe-style), capped to budget."""
+    """Pick midpoints of histogram-change segments (CineScribe-style), capped to budget.
+
+    Scans sequentially (no per-sample seek) for speed on long/UHD clips.
+    """
     if frame_count <= 0:
         return []
     if max_frames <= 1:
         return [0]
 
-    sample_s = max(get_float_env("FRAME_SCENE_SAMPLE_S", 0.5), 0.1)
-    stride = max(int(round(fps * sample_s)), 1) if fps > 0 else max(frame_count // 80, 1)
+    sample_s = max(get_float_env("FRAME_SCENE_SAMPLE_S", 1.0), 0.1)
+    stride = max(int(round(fps * sample_s)), 1) if fps > 0 else max(frame_count // 60, 1)
     threshold = max(get_float_env("FRAME_SCENE_THRESHOLD", 0.22), 0.01)
 
     samples: list[tuple[int, float]] = []
     prev_gray = None
-    for idx in range(0, frame_count, stride):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+    idx = 0
+    # Sequential decode — OpenCV seeks are very slow on long files.
+    while True:
         ok, frame = cap.read()
         if not ok or frame is None:
-            continue
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        if prev_gray is None:
-            samples.append((idx, 1.0))
-        else:
-            samples.append((idx, _hist_bhattacharyya(prev_gray, gray)))
-        prev_gray = gray
+            break
+        if idx % stride == 0:
+            # Tiny grayscale thumb for change detection only.
+            thumb = cv2.resize(frame, (160, 90), interpolation=cv2.INTER_AREA)
+            gray = cv2.cvtColor(thumb, cv2.COLOR_BGR2GRAY)
+            if prev_gray is None:
+                samples.append((idx, 1.0))
+            else:
+                samples.append((idx, _hist_bhattacharyya(prev_gray, gray)))
+            prev_gray = gray
+        idx += 1
+        if frame_count > 0 and idx >= frame_count:
+            break
 
     if not samples:
         return _frame_indices(frame_count, max_frames)
 
-    last = max(frame_count - 1, 0)
+    last = max((frame_count - 1) if frame_count > 0 else (idx - 1), 0)
     cut_idxs = [samples[0][0]]
-    for idx, score in samples[1:]:
+    for sample_idx, score in samples[1:]:
         if score >= threshold:
-            cut_idxs.append(idx)
+            cut_idxs.append(sample_idx)
     if cut_idxs[-1] != last:
         cut_idxs.append(last)
-    # Treat cuts as segment starts; add terminal bound.
-    bounds = sorted(set(cut_idxs + [frame_count]))
+    bounds = sorted(set(cut_idxs + [last + 1]))
     midpoints: list[int] = []
     for start, end in zip(bounds, bounds[1:]):
         if end <= start:
@@ -277,7 +286,7 @@ def _scene_change_indices(
     preferred = sorted(set([0, last, *midpoints]))
     return _merge_indices_to_budget(
         preferred,
-        _frame_indices(frame_count, max_frames),
+        _frame_indices(max(frame_count, last + 1), max_frames),
         max_frames,
     )
 

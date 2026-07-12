@@ -33,15 +33,16 @@ def _apply_demo_env() -> None:
     """Align with Docker agent caption stack; skip batch-only judge for single-clip demo."""
     os.environ.setdefault("JUDGE_RETRY", "0")
     os.environ.setdefault("STYLE_JSON_MODE", "1")
-    os.environ.setdefault("CAPTION_MODEL_POOL", "deepseek-v4-flash,deepseek-v4-flash")
+    os.environ.setdefault("CAPTION_MODEL_POOL", "deepseek-v4-flash")
     os.environ.setdefault("PARALLEL_STYLES", "1")
     os.environ.setdefault("STYLE_META_LEAK_SALVAGE", "1")
     os.environ.setdefault("GOOGLE_API_TIMEOUT_S", "30")
     os.environ.setdefault("DESCRIBE_MAX_ATTEMPTS_WITH_FALLBACK", "1")
     os.environ.setdefault("DESCRIBE_DUAL", "0")
     os.environ.setdefault("FRAME_MODE", "scene")
-    os.environ.setdefault("FRAME_WIDTH", "512")
-    os.environ.setdefault("API_TIMEOUT_S", "120")
+    os.environ.setdefault("FRAME_WIDTH", "384")
+    os.environ.setdefault("FRAME_COUNT_MAX", "12")
+    os.environ.setdefault("API_TIMEOUT_S", "60")
     os.environ.setdefault("VISION_FALLBACK_MODEL", _DEFAULT_VISION_FALLBACK)
 
 
