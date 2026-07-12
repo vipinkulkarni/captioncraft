@@ -72,3 +72,12 @@ class TestDescribeSchema:
         text = description.to_style_context()
         assert "blue bus" in text
         assert "colors: blue" in text
+
+    def test_on_screen_text_optional(self):
+        raw = SAMPLE_JSON.replace(
+            '"notable_moments": ["tail raised"]',
+            '"on_screen_text": ["if (initial == 0)"], "notable_moments": ["tail raised"]',
+        )
+        ok, reason, formatted = parse_describe_json(raw)
+        assert ok, reason
+        assert "On-screen text: if (initial == 0)" in formatted

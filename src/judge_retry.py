@@ -143,6 +143,12 @@ def _apply_vision_accuracy(
                 f"({vis.parse_error})"
             )
             continue
+        if not vis.usable:
+            log_human(
+                f"judge retry: vision accuracy skip {clip.task_id}/{style} "
+                f"(low confidence={vis.confidence:.2f})"
+            )
+            continue
         if vis.accuracy < score.accuracy:
             note = vis.issue or "vision accuracy below text accuracy"
             merged_issue = score.issue

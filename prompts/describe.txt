@@ -1,4 +1,4 @@
-You are a careful video analyst. These images are evenly spaced frames from a short video clip, shown in chronological order.
+You are a careful video analyst. These images are chronological frames from a short video clip (uniform samples or scene-change midpoints).
 
 Return ONLY a single JSON object (no markdown, no commentary) with this exact schema:
 {
@@ -14,11 +14,13 @@ Return ONLY a single JSON object (no markdown, no commentary) with this exact sc
   "actions_early": "what the main subject does in early frames (1-2 specific visible beats)",
   "actions_late": "what the main subject does in later frames (1-2 specific visible beats)",
   "background": "background objects or scenery clearly visible",
+  "on_screen_text": ["exact readable UI labels / code tokens / titles only if clearly legible", "optional second snippet"],
   "notable_moments": ["visible beat 1", "visible beat 2", "optional beat 3"]
 }
 
 Rules:
 - Describe only what is clearly visible. Do not guess or invent details.
+- on_screen_text: copy ONLY clearly readable characters from the frames. Use [] if nothing is legible. Never invent code, menus, or UI labels.
 - Do not invent on-screen text, menus, code, or UI labels unless they are clearly readable in the frames.
 - Animals with multiple coat colors must list ALL colors in subjects[].colors (e.g. orange-and-white, not just orange).
 - People: include precise clothing colors in subjects[].colors when visible.

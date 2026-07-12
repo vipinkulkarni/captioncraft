@@ -181,6 +181,107 @@ def _frame_times_ms(duration_s: float, max_frames: int) -> list[float]:
     )
 
 
+def _frame_mode() -> str:
+    mode = os.environ.get("FRAME_MODE", "uniform").strip().lower()
+    return mode if mode in {"uniform", "scene"} else "uniform"
+
+
+def _hist_bhattacharyya(prev_gray, gray) -> float:
+    hist_a = cv2.calcHist([prev_gray], [0], None, [32], [0, 256])
+    hist_b = cv2.calcHist([gray], [0], None, [32], [0, 256])
+    cv2.normalize(hist_a, hist_a)
+    cv2.normalize(hist_b, hist_b)
+    return float(cv2.compareHist(hist_a, hist_b, cv2.HISTCMP_BHATTACHARYYA))
+
+
+def _merge_indices_to_budget(preferred: list[int], filler: list[int], max_frames: int) -> list[int]:
+    """Keep bookends + preferred cuts, then fill evenly up to max_frames."""
+    if max_frames <= 0:
+        return []
+    ordered: list[int] = []
+    for idx in preferred + filler:
+        if idx not in ordered:
+            ordered.append(idx)
+    ordered = sorted(ordered)
+    if len(ordered) <= max_frames:
+        return ordered
+    if max_frames == 1:
+        return [ordered[0]]
+    # Always keep first/last; pick remaining by even spacing across preferred set.
+    keep = {ordered[0], ordered[-1]}
+    inner = ordered[1:-1]
+    slots = max_frames - 2
+    if slots <= 0:
+        return sorted(keep)
+    if len(inner) <= slots:
+        keep.update(inner)
+        return sorted(keep)
+    picked = [
+        inner[round(i * (len(inner) - 1) / (slots - 1))] if slots > 1 else inner[len(inner) // 2]
+        for i in range(slots)
+    ]
+    keep.update(picked)
+    return sorted(keep)[:max_frames]
+
+
+def _scene_change_indices(
+    cap: cv2.VideoCapture,
+    *,
+    frame_count: int,
+    fps: float,
+    max_frames: int,
+) -> list[int]:
+    """Pick midpoints of histogram-change segments (CineScribe-style), capped to budget."""
+    if frame_count <= 0:
+        return []
+    if max_frames <= 1:
+        return [0]
+
+    sample_s = max(get_float_env("FRAME_SCENE_SAMPLE_S", 0.5), 0.1)
+    stride = max(int(round(fps * sample_s)), 1) if fps > 0 else max(frame_count // 80, 1)
+    threshold = max(get_float_env("FRAME_SCENE_THRESHOLD", 0.22), 0.01)
+
+    samples: list[tuple[int, float]] = []
+    prev_gray = None
+    for idx in range(0, frame_count, stride):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            continue
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if prev_gray is None:
+            samples.append((idx, 1.0))
+        else:
+            samples.append((idx, _hist_bhattacharyya(prev_gray, gray)))
+        prev_gray = gray
+
+    if not samples:
+        return _frame_indices(frame_count, max_frames)
+
+    last = max(frame_count - 1, 0)
+    cut_idxs = [samples[0][0]]
+    for idx, score in samples[1:]:
+        if score >= threshold:
+            cut_idxs.append(idx)
+    if cut_idxs[-1] != last:
+        cut_idxs.append(last)
+    # Treat cuts as segment starts; add terminal bound.
+    bounds = sorted(set(cut_idxs + [frame_count]))
+    midpoints: list[int] = []
+    for start, end in zip(bounds, bounds[1:]):
+        if end <= start:
+            continue
+        midpoints.append((start + end - 1) // 2)
+    if not midpoints:
+        midpoints = [0, last]
+    preferred = sorted(set([0, last, *midpoints]))
+    return _merge_indices_to_budget(
+        preferred,
+        _frame_indices(frame_count, max_frames),
+        max_frames,
+    )
+
+
 def _encode_frame_jpeg(frame, width: int) -> bytes:
     h, w = frame.shape[:2]
     if w > width:
@@ -212,7 +313,17 @@ def extract_frames_jpeg(
         max_frames = resolve_frame_count(effective_duration)
 
     frames: list[bytes] = []
-    indices = _frame_indices(frame_count, max_frames)
+    mode = _frame_mode()
+    if mode == "scene" and frame_count > 0:
+        indices = _scene_change_indices(
+            cap,
+            frame_count=frame_count,
+            fps=fps,
+            max_frames=max_frames,
+        )
+    else:
+        indices = _frame_indices(frame_count, max_frames)
+
     if indices:
         for idx in indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
@@ -964,6 +1075,7 @@ def _log_config(ctx: _RunContext) -> None:
         f"frame_interval_s={os.environ.get('FRAME_INTERVAL_S', '4')} "
         f"frame_count_min={os.environ.get('FRAME_COUNT_MIN', '8')} "
         f"frame_count_max={os.environ.get('FRAME_COUNT_MAX', '24')} "
+        f"frame_mode={os.environ.get('FRAME_MODE', 'uniform')} "
         f"api_timeout_s={os.environ.get('API_TIMEOUT_S', '45')} "
         f"describe_dual={'on' if dual_describe_enabled() else 'off'} "
         f"vision_alt={resolve_vision_alt_model() or 'none'} "

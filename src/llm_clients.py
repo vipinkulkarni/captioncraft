@@ -101,10 +101,10 @@ def resolve_llm_client(model: str, *, fallback: OpenAI | None = None) -> OpenAI 
 def fireworks_extra_body(model: str) -> dict | None:
     """Request extras for Fireworks hybrid-reasoning models.
 
-    Qwen3.7 Plus thinks by default; for structured describe/judge we disable
+    Qwen / Kimi often think by default; for structured describe/judge we disable
     thinking so output tokens are spent on the JSON answer, not CoT.
     """
     slug = model.strip().lower()
-    if "qwen" in slug:
+    if "qwen" in slug or "kimi" in slug:
         return {"thinking": {"type": "disabled"}}
     return None

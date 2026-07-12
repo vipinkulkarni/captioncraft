@@ -16,6 +16,7 @@ class VideoDescription:
     background: str = ""
     camera: str = ""
     notable_moments: list[str] = field(default_factory=list)
+    on_screen_text: list[str] = field(default_factory=list)
 
     def to_style_context(self) -> str:
         lines = [
@@ -39,6 +40,8 @@ class VideoDescription:
             if distinguishing:
                 part += f" [{', '.join(distinguishing)}]"
             lines.append(part)
+        if self.on_screen_text:
+            lines.append("On-screen text: " + "; ".join(self.on_screen_text))
         if self.notable_moments:
             lines.append("Notable moments: " + "; ".join(self.notable_moments))
         return "\n".join(lines)
@@ -117,6 +120,9 @@ def _validate_payload(data: Any) -> tuple[bool, str, VideoDescription | None]:
         background=str(data.get("background", "")).strip(),
         camera=str(data.get("camera", "")).strip(),
         notable_moments=_as_string_list(data.get("notable_moments")),
+        on_screen_text=_as_string_list(
+            data.get("on_screen_text") or data.get("ocr") or data.get("readable_text")
+        ),
     )
     return True, "", description
 

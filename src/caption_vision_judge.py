@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,9 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _PROMPT_PATH = _REPO_ROOT / "prompts" / "judge_caption_accuracy.txt"
 
 _DEFAULT_VISION_JUDGE = "accounts/fireworks/models/minimax-m3"
+_DEFAULT_VISION_JUDGE_ALT = "accounts/fireworks/models/kimi-k2p6"
 _ACCURACY_RE = re.compile(r'"accuracy"\s*:\s*([0-9]*\.?[0-9]+)', re.I)
+_CONFIDENCE_RE = re.compile(r'"confidence"\s*:\s*([0-9]*\.?[0-9]+)', re.I)
 _ISSUE_RE = re.compile(r'"issue"\s*:\s*"(.*?)"', re.I | re.S)
 
 
@@ -27,12 +30,46 @@ _ISSUE_RE = re.compile(r'"issue"\s*:\s*"(.*?)"', re.I | re.S)
 class CaptionVisionAccuracy:
     accuracy: float
     issue: str = ""
+    confidence: float = 1.0
     judge_model: str = ""
     parse_error: str = ""
 
     @property
     def ok(self) -> bool:
         return not self.parse_error
+
+    @property
+    def usable(self) -> bool:
+        """True when parse succeeded and confidence clears the eval threshold."""
+        if not self.ok:
+            return False
+        return self.confidence >= vision_judge_min_confidence()
+
+
+@dataclass
+class CaptionVisionPanelScore:
+    accuracy: float
+    confidence: float
+    issue: str = ""
+    disagreement: float = 0.0
+    members: list[CaptionVisionAccuracy] = field(default_factory=list)
+    parse_error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        """True when at least one judge produced a score."""
+        return bool(self.members) and any(m.ok for m in self.members)
+
+    @property
+    def usable(self) -> bool:
+        """Decision-grade: full panel, high confidence, low disagreement."""
+        if not self.members or not all(m.ok for m in self.members):
+            return False
+        if self.confidence < vision_judge_min_confidence():
+            return False
+        if self.disagreement > vision_judge_max_disagreement():
+            return False
+        return True
 
 
 def resolve_caption_vision_judge_model() -> str:
@@ -42,9 +79,43 @@ def resolve_caption_vision_judge_model() -> str:
     )
 
 
+def resolve_caption_vision_judge_alt_model() -> str:
+    return (
+        os.environ.get("CAPTION_VISION_JUDGE_ALT", "").strip()
+        or _DEFAULT_VISION_JUDGE_ALT
+    )
+
+
+def resolve_caption_vision_judge_panel() -> list[str]:
+    """Models for multi-judge panel (eval). Empty env → primary+alt if distinct."""
+    raw = os.environ.get("CAPTION_VISION_JUDGE_PANEL", "").strip()
+    if raw:
+        models = [m.strip() for m in raw.split(",") if m.strip()]
+        seen: set[str] = set()
+        out: list[str] = []
+        for m in models:
+            if m not in seen:
+                seen.add(m)
+                out.append(m)
+        return out
+    primary = resolve_caption_vision_judge_model()
+    alt = resolve_caption_vision_judge_alt_model()
+    if alt and alt != primary:
+        return [primary, alt]
+    return [primary]
+
+
 def caption_vision_accuracy_enabled() -> bool:
     """Pipeline flag: only on when explicitly enabled after composition-gap diagnostic."""
     return get_int_env("CAPTION_VISION_ACCURACY", 0) == 1
+
+
+def vision_judge_min_confidence() -> float:
+    return min(max(get_float_env("CAPTION_VISION_JUDGE_MIN_CONFIDENCE", 0.7), 0.0), 1.0)
+
+
+def vision_judge_max_disagreement() -> float:
+    return min(max(get_float_env("CAPTION_VISION_JUDGE_MAX_DISAGREE", 0.25), 0.0), 1.0)
 
 
 def load_judge_caption_accuracy_prompt() -> str:
@@ -85,6 +156,7 @@ def parse_caption_vision_accuracy_response(
     if not (raw or "").strip():
         return CaptionVisionAccuracy(
             accuracy=0.0,
+            confidence=0.0,
             judge_model=judge_model,
             parse_error="EmptyResponse",
         )
@@ -93,8 +165,14 @@ def parse_caption_vision_accuracy_response(
         if isinstance(payload, dict):
             accuracy = _parse_unit_score(payload.get("accuracy"))
             if accuracy is not None:
+                conf_raw = payload.get("confidence", payload.get("conf"))
+                confidence = _parse_unit_score(conf_raw)
+                # Legacy responses without confidence: treat as high confidence.
+                if confidence is None:
+                    confidence = 1.0
                 return CaptionVisionAccuracy(
                     accuracy=accuracy,
+                    confidence=confidence,
                     issue=str(payload.get("issue") or "").strip(),
                     judge_model=judge_model,
                 )
@@ -105,15 +183,21 @@ def parse_caption_vision_accuracy_response(
     if match:
         accuracy = _parse_unit_score(match.group(1))
         if accuracy is not None:
+            conf_m = _CONFIDENCE_RE.search(raw)
+            confidence = _parse_unit_score(conf_m.group(1)) if conf_m else 1.0
+            if confidence is None:
+                confidence = 1.0
             issue_m = _ISSUE_RE.search(raw)
             issue = issue_m.group(1).strip() if issue_m else ""
             return CaptionVisionAccuracy(
                 accuracy=accuracy,
+                confidence=confidence,
                 issue=issue,
                 judge_model=judge_model,
             )
     return CaptionVisionAccuracy(
         accuracy=0.0,
+        confidence=0.0,
         judge_model=judge_model,
         parse_error="InvalidJSON",
     )
@@ -132,6 +216,7 @@ def judge_caption_vision_accuracy(
     if is_google_ai_model(model):
         return CaptionVisionAccuracy(
             accuracy=0.0,
+            confidence=0.0,
             judge_model=model,
             parse_error="GoogleCaptionVisionUnsupported",
         )
@@ -139,6 +224,7 @@ def judge_caption_vision_accuracy(
     if resolved is None:
         return CaptionVisionAccuracy(
             accuracy=0.0,
+            confidence=0.0,
             judge_model=model,
             parse_error="MissingClient",
         )
@@ -152,14 +238,14 @@ def judge_caption_vision_accuracy(
             "type": "text",
             "text": (
                 f"Caption:\n{caption.strip()}\n\n"
-                "Score accuracy against the frames above."
+                "Score accuracy and confidence against the frames above."
             ),
         }
     )
     tok = (
         max_tokens
         if max_tokens is not None
-        else max(get_int_env("CAPTION_VISION_JUDGE_MAX_TOKENS", 256), 64)
+        else max(get_int_env("CAPTION_VISION_JUDGE_MAX_TOKENS", 320), 64)
     )
     temp = (
         temperature
@@ -188,6 +274,7 @@ def judge_caption_vision_accuracy(
         except Exception as exc:  # noqa: BLE001
             return CaptionVisionAccuracy(
                 accuracy=0.0,
+                confidence=0.0,
                 judge_model=model,
                 parse_error=type(exc).__name__,
             )
@@ -195,3 +282,71 @@ def judge_caption_vision_accuracy(
         if score.ok:
             return score
     return parse_caption_vision_accuracy_response(last_raw, judge_model=model)
+
+
+def aggregate_vision_panel(
+    members: list[CaptionVisionAccuracy],
+) -> CaptionVisionPanelScore:
+    """Mean accuracy/confidence across successful judges; track disagreement."""
+    ok_members = [m for m in members if m.ok]
+    if not ok_members:
+        err = members[0].parse_error if members else "EmptyPanel"
+        return CaptionVisionPanelScore(
+            accuracy=0.0,
+            confidence=0.0,
+            members=list(members),
+            parse_error=err or "AllJudgesFailed",
+        )
+    accuracies = [m.accuracy for m in ok_members]
+    confidences = [m.confidence for m in ok_members]
+    disagreement = max(accuracies) - min(accuracies) if len(accuracies) > 1 else 0.0
+    issues = [m.issue for m in ok_members if m.issue]
+    issue = " | ".join(dict.fromkeys(issues))
+    parse_error = ""
+    if len(ok_members) < len(members):
+        failed = [m.parse_error or m.judge_model for m in members if not m.ok]
+        parse_error = f"PartialPanel:{','.join(failed)}"
+    return CaptionVisionPanelScore(
+        accuracy=round(sum(accuracies) / len(accuracies), 3),
+        confidence=round(sum(confidences) / len(confidences), 3),
+        disagreement=round(disagreement, 3),
+        issue=issue,
+        members=list(members),
+        parse_error=parse_error,
+    )
+
+
+def judge_caption_vision_panel(
+    *,
+    frames_jpeg: list[bytes],
+    caption: str,
+    models: list[str] | None = None,
+    client: OpenAI | None = None,
+    parallel: bool = True,
+) -> CaptionVisionPanelScore:
+    """Score caption with one or more vision judges and aggregate."""
+    panel = models or resolve_caption_vision_judge_panel()
+    if not panel:
+        return CaptionVisionPanelScore(
+            accuracy=0.0,
+            confidence=0.0,
+            parse_error="EmptyPanel",
+        )
+
+    def _one(model: str) -> CaptionVisionAccuracy:
+        return judge_caption_vision_accuracy(
+            client=resolve_llm_client(model, fallback=client),
+            model=model,
+            frames_jpeg=frames_jpeg,
+            caption=caption,
+        )
+
+    members: list[CaptionVisionAccuracy]
+    if parallel and len(panel) > 1:
+        with ThreadPoolExecutor(max_workers=len(panel)) as pool:
+            futs = {pool.submit(_one, m): m for m in panel}
+            by_model = {futs[f]: f.result() for f in as_completed(futs)}
+            members = [by_model[m] for m in panel]
+    else:
+        members = [_one(m) for m in panel]
+    return aggregate_vision_panel(members)

@@ -1,6 +1,11 @@
 """Baseline unit tests for pure pipeline helpers."""
 
-from src.pipeline import _frame_indices, _frame_times_ms, _is_bad_download_content_type
+from src.pipeline import (
+    _frame_indices,
+    _frame_times_ms,
+    _is_bad_download_content_type,
+    _merge_indices_to_budget,
+)
 
 
 class TestFrameIndices:
@@ -41,6 +46,18 @@ class TestFrameTimesMs:
 
     def test_zero_duration(self):
         assert _frame_times_ms(0.0, 8) == []
+
+
+class TestMergeIndicesToBudget:
+    def test_keeps_bookends_under_budget(self):
+        merged = _merge_indices_to_budget([0, 10, 20, 30, 40], [0, 40], 4)
+        assert merged[0] == 0
+        assert merged[-1] == 40
+        assert len(merged) == 4
+        assert merged == sorted(merged)
+
+    def test_returns_all_when_under_budget(self):
+        assert _merge_indices_to_budget([0, 5, 9], [0, 3, 9], 8) == [0, 3, 5, 9]
 
 
 class TestContentTypeDenylist:
