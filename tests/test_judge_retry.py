@@ -73,6 +73,37 @@ def test_judge_feedback_nudge_includes_issue():
     assert "do not invent" in nudge
 
 
+def test_apply_vision_accuracy_lowers_text_score(monkeypatch):
+    from src.judge_retry import _apply_vision_accuracy
+    from src.caption_vision_judge import CaptionVisionAccuracy
+
+    clip = ClipJudgeResult(
+        task_id="e01",
+        captions={
+            "formal": CaptionJudgeScore(
+                style="formal", accuracy=1.0, style_match=0.95
+            ),
+        },
+    )
+
+    def _fake_vis(**_kwargs):
+        return CaptionVisionAccuracy(accuracy=0.4, issue="invented UI", judge_model="m3")
+
+    monkeypatch.setattr(
+        "src.judge_retry.judge_caption_vision_accuracy",
+        _fake_vis,
+    )
+    _apply_vision_accuracy(
+        clip=clip,
+        captions={"formal": "Someone types React code on a laptop."},
+        frames=[b"fake"],
+        client=MagicMock(),
+        model="m3",
+    )
+    assert clip.captions["formal"].accuracy == 0.4
+    assert "vision:" in clip.captions["formal"].issue
+
+
 def test_pipelined_judge_retries_failed_style(tmp_path, monkeypatch):
     monkeypatch.setenv("JUDGE_RETRY", "1")
     monkeypatch.setenv("JUDGE_RETRY_REGEX", "0")

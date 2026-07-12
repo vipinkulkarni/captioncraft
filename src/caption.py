@@ -122,9 +122,13 @@ def _describe_prompt_name() -> str:
 
 
 _STYLE_STRUCTURED_HINT = (
-    "Use at least one color or marking from subjects and at least one action "
-    "from actions_early or actions_late. Match setting and surfaces exactly "
-    "(water vs ground, indoor vs outdoor). Do not invent details not present below."
+    "Closed world: use ONLY the scene facts below. "
+    "Every concrete noun, color, species, object, place, action, UI label, or code "
+    "snippet must be entailed by those facts — do not rename subjects or invent extras. "
+    "Use at least one color/marking from subjects and at least one action from "
+    "actions_early or actions_late. Match setting and surfaces exactly "
+    "(water vs ground, indoor vs outdoor). "
+    "Metaphors/jokes are style only — they must not introduce new scene objects."
 )
 
 _META_LEAK_RETRY_NUDGE = (
@@ -134,7 +138,8 @@ _META_LEAK_RETRY_NUDGE = (
 )
 
 _DIVERSITY_RETRY_NUDGE = (
-    "Write a fresh variant: keep the same scene facts but change wording and humor angle."
+    "Write a fresh variant: keep the exact same closed-world scene facts "
+    "(same subjects, colors, actions) but change wording and humor angle."
 )
 
 

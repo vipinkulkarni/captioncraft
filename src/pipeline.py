@@ -891,6 +891,7 @@ class _RunContext:
     time_budget_s: float = 0.0
     deadline_reserve_s: float = 30.0
     descriptions_live: dict[str, str] = field(default_factory=dict)
+    frames_live: dict[str, list[bytes]] = field(default_factory=dict)
     judge_retry: object | None = None
 
     def should_skip_primary_describe(self, *, remaining_clips: int) -> bool:
@@ -1054,6 +1055,10 @@ def _finish_task_caption(
     caption_s = 0.0
     style_attempts: dict[str, int] = {}
     _store_live_description(ctx.descriptions_live, task_id, describe)
+    if prepared.frames:
+        from src.judge_retry import remember_frames
+
+        remember_frames(ctx.frames_live, task_id, prepared.frames)
     try:
         t1 = time.perf_counter()
         log_human(f"  {task_id}: captioning styles...")
@@ -1270,6 +1275,10 @@ def _process_task(
             describe_s = time.perf_counter() - t0
 
         _store_live_description(ctx.descriptions_live, task_id, describe)
+        if frames:
+            from src.judge_retry import remember_frames
+
+            remember_frames(ctx.frames_live, task_id, frames)
         t1 = time.perf_counter()
         log_human(f"  {task_id}: captioning styles...")
         captions, style_attempts = _caption_styles_from_description(
@@ -1466,6 +1475,7 @@ def run_full_tasks(
         run_start=ctx.run_start,
         time_budget_s=ctx.time_budget_s,
         total_clips=len(tasks),
+        frames_by_task=ctx.frames_live,
     )
     with _ClipPrefetch() as prefetch:
         try:

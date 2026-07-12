@@ -18,6 +18,11 @@ from src.caption import (
     resolve_caption_model_pool,
 )
 from src.caption_selector import generate_best_of_n_caption
+from src.caption_vision_judge import (
+    caption_vision_accuracy_enabled,
+    judge_caption_vision_accuracy,
+    resolve_caption_vision_judge_model,
+)
 from src.env import get_float_env, get_int_env
 from src.llm_judge import (
     CaptionJudgeScore,
@@ -39,6 +44,11 @@ def judge_retry_enabled() -> bool:
 def remember_description(store: dict[str, str], task_id: str, describe: DescribeResult) -> None:
     if describe.ok and describe.text:
         store[task_id] = describe.text.strip()
+
+
+def remember_frames(store: dict[str, list[bytes]], task_id: str, frames: list[bytes]) -> None:
+    if task_id and frames:
+        store[task_id] = frames
 
 
 def list_judge_failures(
@@ -101,8 +111,53 @@ def judge_feedback_nudge(score: CaptionJudgeScore) -> str:
     return (
         f"Previous caption scored accuracy={score.accuracy:.2f} "
         f"style_match={score.style_match:.2f}. Issue: {issue}. "
-        "Rewrite using only scene facts; do not invent objects or UI."
+        "Rewrite using only scene facts; do not invent or rename objects, species, "
+        "UI, code, or emotions not listed. Metaphors must not add new scene objects."
     )
+
+
+def _apply_vision_accuracy(
+    *,
+    clip: ClipJudgeResult,
+    captions: dict[str, str],
+    frames: list[bytes],
+    client: OpenAI,
+    model: str,
+) -> None:
+    """Overwrite text accuracy with min(text, vision) when vision judge succeeds."""
+    for style, score in list(clip.captions.items()):
+        if score.skipped:
+            continue
+        text = captions.get(style, "")
+        if not text.strip():
+            continue
+        vis = judge_caption_vision_accuracy(
+            client=client,
+            model=model,
+            frames_jpeg=frames,
+            caption=text,
+        )
+        if not vis.ok:
+            log_human(
+                f"judge retry: vision accuracy skip {clip.task_id}/{style} "
+                f"({vis.parse_error})"
+            )
+            continue
+        if vis.accuracy < score.accuracy:
+            note = vis.issue or "vision accuracy below text accuracy"
+            merged_issue = score.issue
+            if note:
+                merged_issue = f"{merged_issue}; vision: {note}" if merged_issue else f"vision: {note}"
+            clip.captions[style] = CaptionJudgeScore(
+                style=style,
+                accuracy=vis.accuracy,
+                style_match=score.style_match,
+                issue=merged_issue,
+            )
+            log_human(
+                f"judge retry: vision accuracy {clip.task_id}/{style} "
+                f"{score.accuracy:.2f}->{vis.accuracy:.2f}"
+            )
 
 
 def _regenerate_style_caption(
@@ -162,10 +217,12 @@ class PipelinedJudgeRetry:
         time_budget_s: float,
         total_clips: int,
         judge_client: OpenAI | None = None,
+        frames_by_task: dict[str, list[bytes]] | None = None,
     ) -> None:
         self._results = results
         self._results_path = results_path
         self._descriptions = descriptions
+        self._frames_by_task = frames_by_task if frames_by_task is not None else {}
         self._caption_client = caption_client
         self._caption_model = caption_model
         self._run_start = run_start
@@ -176,6 +233,8 @@ class PipelinedJudgeRetry:
         self._logged_estimate = False
         self._judge_client = judge_client
         self._judge_model = _resolve_judge_model()
+        self._vision_judge_model = resolve_caption_vision_judge_model()
+        self._vision_accuracy = caption_vision_accuracy_enabled()
         self._min_score = resolve_judge_min_score()
         self._reserve_s = get_float_env("JUDGE_RETRY_RESERVE_S", 18.0)
         self._min_remaining = get_float_env("JUDGE_MIN_REMAINING_S", 90.0)
@@ -261,6 +320,15 @@ class PipelinedJudgeRetry:
             skip_distinctness=self._skip_distinctness,
             parallel_styles=self._parallel_styles,
         )
+        frames = self._frames_by_task.get(task_id) or []
+        if self._vision_accuracy and frames:
+            _apply_vision_accuracy(
+                clip=clip,
+                captions={str(k): str(v) for k, v in captions.items()},
+                frames=frames,
+                client=self._get_judge_client(),
+                model=self._vision_judge_model,
+            )
         passing = clip.passing_styles(min_score=self._min_score)
         log_human(
             f"judge retry: {task_id} -> {passing}/{clip.total_styles()} pass"
@@ -321,6 +389,19 @@ class PipelinedJudgeRetry:
                         f"({err or 'parse-error'}); keeping prior caption"
                     )
                     continue
+                if self._vision_accuracy and frames:
+                    temp_clip = ClipJudgeResult(
+                        task_id=task_id,
+                        captions={style: new_score},
+                    )
+                    _apply_vision_accuracy(
+                        clip=temp_clip,
+                        captions={style: new_text},
+                        frames=frames,
+                        client=self._get_judge_client(),
+                        model=self._vision_judge_model,
+                    )
+                    new_score = temp_clip.captions[style]
                 if (
                     best_score.skipped
                     or new_score.average > best_score.average
@@ -390,6 +471,7 @@ def create_pipelined_judge_retry(
     run_start: float,
     time_budget_s: float,
     total_clips: int,
+    frames_by_task: dict[str, list[bytes]] | None = None,
 ) -> PipelinedJudgeRetry | None:
     if not judge_retry_enabled():
         return None
@@ -408,4 +490,5 @@ def create_pipelined_judge_retry(
         run_start=run_start,
         time_budget_s=time_budget_s,
         total_clips=total_clips,
+        frames_by_task=frames_by_task,
     )
