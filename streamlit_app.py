@@ -63,6 +63,8 @@ def _pretty_model(model: str) -> str:
     if not m:
         return ""
     lower = m.lower()
+    if "kimi-k2p6" in lower or "kimi-k2.6" in lower or "kimi_k2" in lower:
+        return "Kimi K2.6"
     if "minimax-m3" in lower:
         return "MiniMax M3"
     if "qwen3p7" in lower or "qwen3.7" in lower:
@@ -108,7 +110,7 @@ st.markdown(
 
 st.title("CaptionCraft demo")
 st.caption(
-    "Gemma 4 describe → four DeepSeek rewrites (best-of-2 · JSON mode). "
+    "Kimi K2.6 describe → four DeepSeek style rewrites (JSON mode). "
     "Same caption stack as the Docker agent; batch runs add pipelined judge+retry."
 )
 
@@ -129,10 +131,14 @@ with st.sidebar:
     or_key_len = len(_env("OPENROUTER_API_KEY"))
     google_key_len = len(_env("GOOGLE_API_KEY")) or len(_env("GEMINI_API_KEY"))
     st.write(f"Fireworks API key: {'set' if key_len else 'missing'}")
-    st.write(f"Google AI API key: {'set' if google_key_len else 'missing'}")
-    st.write(f"OpenRouter API key: {'set' if or_key_len else 'missing'}")
-    if is_google_ai_model(vision_model) and not google_key_len:
-        st.error("Gemma vision needs `GOOGLE_API_KEY` in Streamlit secrets.")
+    if is_google_ai_model(vision_model):
+        st.write(f"Google AI API key: {'set' if google_key_len else 'missing'}")
+        if not google_key_len:
+            st.error("Gemma vision needs `GOOGLE_API_KEY` in Streamlit secrets.")
+    if or_key_len or is_openrouter_model(vision_model) or is_openrouter_model(
+        caption_model
+    ):
+        st.write(f"OpenRouter API key: {'set' if or_key_len else 'missing'}")
     if not key_len:
         st.error(
             "Missing `FIREWORKS_API_KEY`. On Streamlit Cloud: App → Settings → Secrets."
@@ -141,11 +147,12 @@ with st.sidebar:
     with st.expander("Pipeline (Docker batch)"):
         st.markdown(
             """
-- **Kimi K2.6** describe · scene frames @ 512px
-- Overlap describe + caption across clips
-- Prefetch next 2 downloads
+- **Kimi K2.6** describe · scene frames @ 384px (max 12)
+- MiniMax M3 fallback on timeout / deadline
+- Four parallel DeepSeek rewrites · JSON mode
+- Overlap describe + caption · prefetch depth 2
 - Pipelined **gpt-oss-120b** judge + retry
-- 540s budget · deadline guard → MiniMax fallback
+- ~520s budget · long-clip frame caps for 10-min limit
 """
         )
     st.caption("Demo disables judge+retry for speed (~30–90s per clip).")
