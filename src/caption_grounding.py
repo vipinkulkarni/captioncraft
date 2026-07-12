@@ -190,7 +190,7 @@ def _anchors_from_formatted(description: str) -> set[str]:
         if not stripped:
             continue
         lower = stripped.lower()
-        if lower.startswith("subject "):
+        if lower.startswith("primary subject:") or lower.startswith("subject "):
             body = stripped.split(":", 1)[-1].strip()
             name = body.split("(", 1)[0].strip()
             anchors |= _tokenize(name)

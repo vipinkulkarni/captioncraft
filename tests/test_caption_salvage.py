@@ -78,6 +78,10 @@ class TestDraftingJunk:
         "The bill is not a physical object in scene, it's a comparison. Should be okay.",
         "But careful: don't invent new objects. Use the given: red track, white numbers.",
         "Revised: The light pink sleeve works the knife in rapid up-and-down motion.",
+        '"Lazy river of metal" is a metaphor but doesn\'t introduce new scene.',
+        '"grey asphalt" maybe not needed. Use "blue glass buildings". Let\'s try.',
+        "Absurd comparisons are tone only; they must not add new physical objects "
+        "as if they are in the scene (no inventing brunch tables, VIP ropes, props not in the facts).",
     ]
 
     def test_junk_samples_flagged(self):

@@ -72,6 +72,30 @@ class TestDescribeSchema:
         text = description.to_style_context()
         assert "blue bus" in text
         assert "colors: blue" in text
+        assert text.startswith("Primary subject:")
+        assert "Caption focus:" in text
+
+    def test_to_style_context_leads_with_primary_subject(self):
+        description = VideoDescription(
+            subjects=[
+                {
+                    "name": "golden ginkgo trees",
+                    "colors": ["golden"],
+                    "distinguishing": [],
+                },
+                {"name": "city buses", "colors": ["blue"], "distinguishing": []},
+            ],
+            setting="urban boulevard",
+            actions_early="traffic flows below",
+            actions_late="traffic continues",
+            background="high-rise apartments",
+        )
+        text = description.to_style_context()
+        primary_idx = text.index("Primary subject: golden ginkgo trees")
+        setting_idx = text.index("Setting:")
+        subject2_idx = text.index("Subject 2: city buses")
+        assert primary_idx < setting_idx
+        assert primary_idx < subject2_idx
 
     def test_on_screen_text_optional(self):
         raw = SAMPLE_JSON.replace(

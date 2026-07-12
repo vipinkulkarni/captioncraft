@@ -123,6 +123,7 @@ def _describe_prompt_name() -> str:
 
 _STYLE_STRUCTURED_HINT = (
     "Closed world: use ONLY the scene facts below. "
+    "Lead with the Primary subject; do not replace it with secondary subjects or background. "
     "Every concrete noun, color, species, object, place, action, UI label, or code "
     "snippet must be entailed by those facts — do not rename subjects or invent extras. "
     "Use at least one color/marking from subjects and at least one action from "

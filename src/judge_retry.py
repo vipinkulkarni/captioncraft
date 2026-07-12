@@ -546,8 +546,9 @@ def create_pipelined_judge_retry(
         log_human("judge retry: skipped (no clips)")
         return None
     if time_budget_s <= 0:
-        log_human("judge retry: skipped (TIME_BUDGET_S not set)")
-        return None
+        # Local/dev: TIME_BUDGET_S=0 means unlimited wall time — still run retries.
+        log_human("judge retry: TIME_BUDGET_S unset/0 — treating as unlimited")
+        time_budget_s = 1e9
     return PipelinedJudgeRetry(
         results=results,
         results_path=results_path,

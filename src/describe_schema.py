@@ -19,31 +19,40 @@ class VideoDescription:
     on_screen_text: list[str] = field(default_factory=list)
 
     def to_style_context(self) -> str:
-        lines = [
-            f"Setting: {self.setting}",
-            f"Actions (early): {self.actions_early}",
-            f"Actions (late): {self.actions_late}",
-        ]
-        if self.camera:
-            lines.append(f"Camera: {self.camera}")
-        if self.background:
-            lines.append(f"Background: {self.background}")
+        # Lead with subjects so captions lock onto visual focus, not background traffic.
+        lines: list[str] = []
         for index, subject in enumerate(self.subjects, start=1):
             name = str(subject.get("name", "")).strip() or f"subject {index}"
             colors = [str(c).strip() for c in (subject.get("colors") or []) if str(c).strip()]
             distinguishing = [
                 str(d).strip() for d in (subject.get("distinguishing") or []) if str(d).strip()
             ]
-            part = f"Subject {index}: {name}"
+            label = "Primary subject" if index == 1 else f"Subject {index}"
+            part = f"{label}: {name}"
             if colors:
                 part += f" (colors: {', '.join(colors)})"
             if distinguishing:
                 part += f" [{', '.join(distinguishing)}]"
             lines.append(part)
+        lines.extend(
+            [
+                f"Setting: {self.setting}",
+                f"Actions (early): {self.actions_early}",
+                f"Actions (late): {self.actions_late}",
+            ]
+        )
+        if self.camera:
+            lines.append(f"Camera: {self.camera}")
+        if self.background:
+            lines.append(f"Background: {self.background}")
         if self.on_screen_text:
             lines.append("On-screen text: " + "; ".join(self.on_screen_text))
         if self.notable_moments:
             lines.append("Notable moments: " + "; ".join(self.notable_moments))
+        lines.append(
+            "Caption focus: lead with the Primary subject; treat other subjects "
+            "and background as secondary context."
+        )
         return "\n".join(lines)
 
 

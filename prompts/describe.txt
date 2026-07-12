@@ -21,6 +21,10 @@ Return ONLY a single JSON object (no markdown, no commentary) with this exact sc
 Rules:
 - Describe only what is clearly visible. Do not guess or invent details.
 - If uncertain about a species, brand, or object identity, use a generic label (bird, person, screen) — never upgrade a guess to a specific name.
+- Order subjects by visual prominence: subjects[0] is what the shot is about (largest, most distinctive, or what a viewer would name first).
+- Scenic elements that dominate the frame (e.g. golden trees lining a boulevard, a red track filling the foreground) belong in subjects[0], not only in background.
+- Example: an elevated view of an autumn boulevard lined with golden/yellow trees must use subjects[0] like "golden autumn trees" (or "ginkgo trees" only if clearly identifiable). Put buses/cars in a later subject or in actions — never subjects[0] as "city street with traffic" when the foliage is the visual focus.
+- Secondary movers (passing cars, distant pedestrians, empty seats) go in later subjects or background — never as subjects[0] unless they are clearly the focus.
 - on_screen_text: copy ONLY clearly readable characters from the frames. Use [] if nothing is legible. Never invent code, menus, or UI labels.
 - Do not invent on-screen text, menus, code, or UI labels unless they are clearly readable in the frames.
 - Animals with multiple coat colors must list ALL colors in subjects[].colors (e.g. orange-and-white, not just orange). Prefer distinctive plumage/fur markings over vague labels when clearly visible.

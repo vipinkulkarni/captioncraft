@@ -9,12 +9,13 @@ from src.caption_selector import rank_caption, select_best_candidate, CaptionCan
 from src.results import CaptionResult
 
 
-SAMPLE_CONTEXT = """Setting: outdoor garden with dappled sunlight
+SAMPLE_CONTEXT = """Primary subject: ginger kitten (colors: orange, white)
+Setting: outdoor garden with dappled sunlight
 Actions (early): ginger kitten sits alert among bushes
 Actions (late): kitten walks forward toward camera
 Background: dirt ground and green foliage
-Subject 1: ginger kitten (colors: orange, white)
-Notable moments: kitten sits still; kitten walks forward"""
+Notable moments: kitten sits still; kitten walks forward
+Caption focus: lead with the Primary subject; treat other subjects and background as secondary context."""
 
 
 class TestCaptionGrounding:
