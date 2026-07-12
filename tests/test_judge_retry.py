@@ -99,7 +99,7 @@ def test_judge_feedback_nudge_meta_leak():
     )
     nudge = judge_feedback_nudge(score)
     assert "meta-leak" in nudge.lower() or "drafting" in nudge.lower()
-    assert "finished caption" in nudge.lower()
+    assert "finished" in nudge.lower() and "caption" in nudge.lower()
 
 
 def test_apply_vision_accuracy_lowers_text_score(monkeypatch):

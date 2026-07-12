@@ -74,7 +74,7 @@ class TestMetaLeakDetection:
     def test_preamble_salvage(self):
         raw = (
             "Caption: Orange kitten walks through green foliage before pausing "
-            "near the camera lens."
+            "near the camera lens. Its tail stays raised as it steps closer."
         )
         assert _is_meta_leak(raw)
         salvaged = _maybe_salvage_meta_leak_preamble(raw)
@@ -84,7 +84,10 @@ class TestMetaLeakDetection:
         assert not bad and reason == ""
 
     def test_normalize_strips_label_preamble(self):
-        raw = "Here's the caption: Waves roll onto a sandy beach at dusk."
+        raw = (
+            "Here's the caption: Waves roll onto a sandy beach at dusk. "
+            "Soft light fades over the quiet horizon."
+        )
         normalized = _normalize_style_output(raw, style="sarcastic")
         assert normalized.startswith("Waves roll")
         assert not _is_meta_leak(normalized)
@@ -92,12 +95,13 @@ class TestMetaLeakDetection:
 
 class TestBadOutput:
     def test_too_short(self):
-        bad, reason = _is_bad_output("Too few words.", style="formal")
+        bad, reason = _is_bad_output("Too few. Words here.", style="formal")
         assert bad and reason == "TooShort"
 
     def test_too_long_for_formal(self):
-        words = "word " * 60
-        bad, reason = _is_bad_output(words.strip(), style="formal")
+        first = ("word " * 35).strip() + "."
+        second = ("more " * 30).strip() + "."
+        bad, reason = _is_bad_output(f"{first} {second}", style="formal")
         assert bad and reason == "TooLong"
 
     def test_meta_leak(self):

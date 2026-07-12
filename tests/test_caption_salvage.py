@@ -2,7 +2,10 @@
 
 from src.caption import _is_bad_output, _is_meta_leak, _normalize_style_output
 from src.caption_salvage import (
+    caption_hard_fail_reason,
+    is_describe_field_dump,
     is_drafting_junk,
+    is_incomplete_caption,
     iter_salvage_candidates,
     pick_two_sentence_fit,
     pick_valid_candidate,
@@ -127,6 +130,30 @@ class TestDraftingJunk:
             assert not is_drafting_junk(text), repr(text[:70])
 
 
+class TestHardFailGates:
+    def test_truncated_one_liner(self):
+        text = "The black editor screen watches its mult."
+        assert is_incomplete_caption(text)
+        assert caption_hard_fail_reason(text) == "incomplete"
+
+    def test_describe_field_dump(self):
+        text = (
+            "Background: coral reef with turquoise water. "
+            "Notable moments: fish swimming past rocks."
+        )
+        assert is_describe_field_dump(text)
+        assert caption_hard_fail_reason(text) == "describe-dump"
+
+    def test_finished_two_sentence_ok(self):
+        text = (
+            "A dark code editor fills the frame with pink and green syntax. "
+            "An if statement appears as the cursor blinks at the end of the line."
+        )
+        assert not is_incomplete_caption(text)
+        assert not is_describe_field_dump(text)
+        assert caption_hard_fail_reason(text) == ""
+
+
 class TestSalvageCandidates:
     def test_meta_preamble_then_caption(self):
         raw = (
@@ -189,4 +216,63 @@ class TestSalvageCandidates:
         )
         normalized = _normalize_style_output(raw, style="sarcastic")
         bad, reason = _is_bad_output(normalized, style="sarcastic")
+        assert not bad, reason
+
+
+class TestSceneMismatchAndExampleEcho:
+    def test_prompt_example_echo_flagged(self):
+        from src.caption_salvage import (
+            is_prompt_example_echo,
+            load_prompt_example_captions,
+        )
+
+        load_prompt_example_captions.cache_clear()
+        leaked = (
+            "The orange kitten marches through the foliage like it owns the lease. "
+            "Tail raised, it approaches the camera as if we should be honored."
+        )
+        assert is_prompt_example_echo(leaked)
+
+    def test_coding_clip_rejects_kitten_caption(self):
+        desc = (
+            "Primary subject: code editor screen (colors: black background)\n"
+            "Setting: indoor close-up of computer\n"
+            "Actions (early): code is typed\n"
+            "Actions (late): autocomplete appears"
+        )
+        caption = (
+            "The orange kitten marches through the foliage like it owns the lease. "
+            "Tail raised, it approaches the camera as if we should be honored."
+        )
+        bad, reason = _is_bad_output(caption, style="sarcastic", description=desc)
+        assert bad
+        assert reason in ("MetaLeak", "SceneMismatch")
+
+    def test_foreign_animal_without_example_echo(self):
+        from src.caption_salvage import scene_subject_mismatch
+
+        desc = (
+            "Primary subject: code editor screen\n"
+            "Setting: indoor\n"
+            "Actions (early): typing\n"
+            "Actions (late): scrolling"
+        )
+        caption = (
+            "A fluffy kitten stares at the glowing monitor like it understands CSS. "
+            "Then it walks away, tail high, unfinished."
+        )
+        assert scene_subject_mismatch(desc, caption)
+
+    def test_matching_primary_subject_ok(self):
+        desc = (
+            "Primary subject: orange kitten (colors: orange, white)\n"
+            "Setting: outdoor garden\n"
+            "Actions (early): sits still\n"
+            "Actions (late): walks forward"
+        )
+        caption = (
+            "An orange kitten sits under green bushes in dappled light. "
+            "It then walks toward the camera with its tail raised."
+        )
+        bad, reason = _is_bad_output(caption, style="formal", description=desc)
         assert not bad, reason

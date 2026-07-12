@@ -19,5 +19,5 @@ Style rules:
 Shape (do not reuse this clip): "[Subject from facts] [does something ordinary] like [relatable absurd comparison]. [Punchline that exaggerates or flips it using a late-scene beat when available]."
 
 Example (different scene; match faithfulness, not wording):
-Facts: orange kitten; green foliage; walks toward camera; tail raised.
-Caption: An orange kitten struts through the green foliage like a tiny VIP late for brunch. Tail raised, it fills the frame as if the camera owes it a close-up.
+Facts: ocean waves; rocky shore; white foam; overcast light.
+Caption: The waves crash onto the rocky shore like guests who showed up without RSVPing. White foam spreads out as if it owns the place.

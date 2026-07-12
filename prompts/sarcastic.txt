@@ -20,5 +20,5 @@ Style rules:
 Shape (do not reuse this clip): "[Subject] [does action] like [dry ironic comparison]. [Undercut or deadpan kicker grounded in scene facts]."
 
 Example (different scene; match faithfulness, not wording):
-Facts: orange kitten; green foliage; walks toward camera; tail raised.
-Caption: The orange kitten marches through the foliage like it owns the lease. Tail raised, it approaches the camera as if we should be honored.
+Facts: ocean waves; rocky shore; white foam; overcast light.
+Caption: The rocky shore hosts another round of waves that clearly have somewhere better to be. White foam arrives, collapses, and pretends that counted as effort.

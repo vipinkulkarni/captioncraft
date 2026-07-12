@@ -14,6 +14,7 @@ from typing import Any, Callable
 from openai import APIConnectionError, APITimeoutError, OpenAI
 
 from src.caption import STYLES, get_fireworks_client
+from src.caption_salvage import caption_hard_fail_reason
 from src.env import get_float_env, get_int_env
 from src.eval_paths import DESCRIPTIONS_FULL
 from src.pipeline import load_descriptions_cache
@@ -386,8 +387,16 @@ def aggregate_clip_judges(per_judge: dict[str, ClipJudgeResult]) -> ClipJudgeRes
     return aggregated
 
 
-def _auto_skip_caption(text: str, style: str) -> CaptionJudgeScore | None:
+def _auto_skip_caption(
+    text: str, style: str, *, description: str = ""
+) -> CaptionJudgeScore | None:
     is_fail, reason = is_structural_failure(text)
+    if not is_fail:
+        hard = caption_hard_fail_reason(
+            text, style=style, description=description or ""
+        )
+        if hard:
+            is_fail, reason = True, hard
     if not is_fail:
         return None
     return CaptionJudgeScore(
@@ -395,9 +404,39 @@ def _auto_skip_caption(text: str, style: str) -> CaptionJudgeScore | None:
         accuracy=0.0,
         style_match=0.0,
         issue=reason,
-        meta_leak=reason == "meta-leak",
+        meta_leak=reason
+        in {"meta-leak", "scene-mismatch", "describe-dump", "incomplete"},
         skipped=True,
         skip_reason=reason,
+    )
+
+
+def _clamp_score_for_scene(
+    score: CaptionJudgeScore,
+    *,
+    caption: str,
+    description: str | None,
+    style: str = "",
+) -> CaptionJudgeScore:
+    """Hard-fail junk the LLM judge may rubber-stamp with high scores."""
+    if not caption.strip():
+        return score
+    reason = caption_hard_fail_reason(
+        caption, style=style or score.style, description=description or ""
+    )
+    if not reason:
+        return score
+    issue = score.issue or reason
+    if reason not in issue.lower():
+        issue = f"{reason}; {issue}" if issue else reason
+    return CaptionJudgeScore(
+        style=score.style,
+        accuracy=min(score.accuracy, 0.1),
+        style_match=min(score.style_match, 0.2),
+        issue=issue,
+        meta_leak=True,
+        skipped=score.skipped,
+        skip_reason=score.skip_reason or reason,
     )
 
 
@@ -554,6 +593,10 @@ def _judge_single_style(
     description: str | None,
     temperature: float,
 ) -> tuple[CaptionJudgeScore | None, str]:
+    forced = _auto_skip_caption(caption, style, description=description or "")
+    if forced is not None:
+        return forced, ""
+
     system_prompt = load_judge_style_prompt()
     lines = [f"Task: {task_id}", f"Style: {style}", f"Caption: {caption}"]
     if description:
@@ -574,7 +617,15 @@ def _judge_single_style(
         )
         score, err = parse_style_judge_response(raw, style=style)
         if score is not None:
-            return score, ""
+            return (
+                _clamp_score_for_scene(
+                    score,
+                    caption=caption,
+                    description=description,
+                    style=style,
+                ),
+                "",
+            )
         if not raw:
             last_error = "EmptyResponse"
         else:
@@ -677,7 +728,7 @@ def judge_clip_call(
 
     def _judge_one(style: str) -> tuple[str, CaptionJudgeScore]:
         text = captions.get(style, "")
-        skipped = _auto_skip_caption(text, style)
+        skipped = _auto_skip_caption(text, style, description=description or "")
         if skipped is not None:
             return style, skipped
 

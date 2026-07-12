@@ -227,6 +227,59 @@ class TestJudgePassLogic:
         )
         assert not score.passes(min_score=0.8)
 
+    def test_scene_mismatch_clamps_llm_rubber_stamp(self):
+        from src.llm_judge import _clamp_score_for_scene
+
+        soft = CaptionJudgeScore(
+            style="sarcastic",
+            accuracy=0.95,
+            style_match=0.95,
+            issue="",
+        )
+        desc = (
+            "Primary subject: code editor screen (colors: black)\n"
+            "Setting: indoor\n"
+            "Actions (early): typing\n"
+            "Actions (late): autocomplete"
+        )
+        caption = (
+            "The orange kitten marches through the foliage like it owns the lease. "
+            "Tail raised, it approaches the camera as if we should be honored."
+        )
+        clamped = _clamp_score_for_scene(soft, caption=caption, description=desc)
+        assert clamped.meta_leak
+        assert clamped.accuracy <= 0.1
+        assert not clamped.passes(min_score=0.8)
+
+    def test_incomplete_clamps_llm_rubber_stamp(self):
+        from src.llm_judge import _clamp_score_for_scene
+
+        soft = CaptionJudgeScore(
+            style="sarcastic",
+            accuracy=0.95,
+            style_match=0.9,
+            issue="",
+        )
+        caption = "The black editor screen watches its mult."
+        clamped = _clamp_score_for_scene(
+            soft, caption=caption, description="", style="sarcastic"
+        )
+        assert clamped.meta_leak
+        assert clamped.accuracy <= 0.1
+        assert "incomplete" in clamped.issue
+
+    def test_describe_dump_auto_skips(self):
+        from src.llm_judge import _auto_skip_caption
+
+        text = (
+            "Background: coral reef with turquoise water. "
+            "Notable moments: a fish glides past."
+        )
+        skipped = _auto_skip_caption(text, "humorous_non_tech")
+        assert skipped is not None
+        assert skipped.skip_reason == "describe-dump"
+        assert skipped.accuracy == 0.0
+
     def test_summary_and_failures(self):
         clip = ClipJudgeResult(
             task_id="e01",

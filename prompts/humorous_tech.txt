@@ -18,5 +18,5 @@ Style rules:
 Shape (do not reuse this clip): "[Visible action from facts] like [dev/engineering metaphor]. [Punchline tying metaphor back to the same visible scene]."
 
 Example (different scene; match faithfulness, not wording):
-Facts: orange kitten; green foliage; walks toward camera; tail raised.
-Caption: The orange kitten advances through green foliage like a canary deploy. Tail raised, it fills the frame — production is live.
+Facts: ocean waves; rocky shore; white foam; overcast light.
+Caption: Waves hit the rocky shore like a retry storm in production. White foam spreads, then clears — incident mitigated, for now.

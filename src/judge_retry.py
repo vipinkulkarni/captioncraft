@@ -58,6 +58,7 @@ def list_judge_failures(
     *,
     min_score: float,
     captions: dict[str, str] | None = None,
+    description: str = "",
 ) -> list[tuple[str, str]]:
     failures: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -86,7 +87,9 @@ def list_judge_failures(
             key = (clip.task_id, str(style))
             if key in seen:
                 continue
-            ok, _reason = score_caption(str(text), str(style))
+            ok, _reason = score_caption(
+                str(text), str(style), description=description
+            )
             if not ok:
                 failures.append(key)
                 seen.add(key)
@@ -101,21 +104,36 @@ def style_still_fails(
     style: str,
     caption: str,
     min_score: float,
+    description: str = "",
 ) -> bool:
     clip = ClipJudgeResult(task_id=task_id, captions={style: score})
     return bool(
-        list_judge_failures(clip, min_score=min_score, captions={style: caption})
+        list_judge_failures(
+            clip,
+            min_score=min_score,
+            captions={style: caption},
+            description=description,
+        )
     )
 
 
 def judge_feedback_nudge(score: CaptionJudgeScore) -> str:
     issue = score.issue or score.skip_reason or "did not meet accuracy/style bar"
-    if score.meta_leak:
+    issue_l = issue.lower()
+    if (
+        score.meta_leak
+        or "scene" in issue_l
+        or "wrong subject" in issue_l
+        or "incomplete" in issue_l
+        or "describe" in issue_l
+        or "meta" in issue_l
+    ):
         return (
-            f"Previous output was drafting/meta-leak (not a finished caption). "
-            f"Issue: {issue}. "
-            "Output ONLY the finished caption in the requested tone — no planning, "
-            "self-critique, 'but careful', 'revised:', or instructions about writing."
+            f"Previous output was unfinished, wrong-scene, meta-leak, or drafting "
+            f"(Issue: {issue}). "
+            "Output ONLY a finished TWO-sentence caption about the Primary subject "
+            "in the scene facts. No describe-field labels, no planning notes, "
+            "no mid-word cutoffs. Do not reuse example captions."
         )
     return (
         f"Previous caption scored accuracy={score.accuracy:.2f} "
@@ -159,10 +177,11 @@ def _apply_vision_accuracy(
         return style, score, vis
 
     results = []
-    if len(work) == 1:
+    workers = min(len(work), max(get_int_env("CAPTION_VISION_JUDGE_WORKERS", 4), 1))
+    if len(work) == 1 or workers <= 1:
         results.append(_one(*work[0]))
     else:
-        with ThreadPoolExecutor(max_workers=min(len(work), 3)) as pool:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
             futs = [pool.submit(_one, *item) for item in work]
             for fut in as_completed(futs):
                 results.append(fut.result())
@@ -329,6 +348,7 @@ class PipelinedJudgeRetry:
             caps = result.get("captions")
             if isinstance(caps, dict):
                 caps[style] = text
+            # Also publish the latest judge score map safely when parallel retries run.
             self._results_path.parent.mkdir(parents=True, exist_ok=True)
             self._results_path.write_text(
                 json.dumps(self._results, indent=2),
@@ -376,6 +396,7 @@ class PipelinedJudgeRetry:
                     clip,
                     min_score=self._min_score,
                     captions=caption_map,
+                    description=description,
                 )
             }
             target_styles = vision_accuracy_target_styles(
@@ -401,11 +422,16 @@ class PipelinedJudgeRetry:
             f"judge retry: {task_id} -> {passing}/{clip.total_styles()} pass"
         )
 
-        for _task_id, style in list_judge_failures(
+        failing = list_judge_failures(
             clip,
             min_score=self._min_score,
             captions={str(k): str(v) for k, v in captions.items()},
-        ):
+            description=description,
+        )
+        if not failing:
+            return
+
+        def _retry_style(style: str) -> None:
             best_text = str(captions.get(style, ""))
             best_score = clip.captions.get(style) or CaptionJudgeScore(
                 style=style,
@@ -414,7 +440,6 @@ class PipelinedJudgeRetry:
                 skipped=True,
                 skip_reason="missing-score",
             )
-            stopped_budget = False
             for attempt in range(1, self._max_per_style + 1):
                 if not style_still_fails(
                     best_score,
@@ -422,15 +447,18 @@ class PipelinedJudgeRetry:
                     style=style,
                     caption=best_text,
                     min_score=self._min_score,
+                    description=description,
                 ):
                     break
                 if not self._try_retry():
-                    log_human("judge retry: stopping retries (budget exhausted)")
-                    stopped_budget = True
+                    log_human(
+                        f"judge retry: stopping retries for {task_id}/{style} "
+                        "(budget exhausted)"
+                    )
                     break
                 feedback = judge_feedback_nudge(best_score)
                 log_human(
-                    f"judge retry: re-caption {_task_id}/{style} "
+                    f"judge retry: re-caption {task_id}/{style} "
                     f"attempt {attempt}/{self._max_per_style}..."
                 )
                 new_text = _regenerate_style_caption(
@@ -452,7 +480,7 @@ class PipelinedJudgeRetry:
                 )
                 if new_score is None:
                     log_human(
-                        f"judge retry: re-judge failed {_task_id}/{style} "
+                        f"judge retry: re-judge failed {task_id}/{style} "
                         f"({err or 'parse-error'}); keeping prior caption"
                     )
                     continue
@@ -478,6 +506,7 @@ class PipelinedJudgeRetry:
                         style=style,
                         caption=new_text,
                         min_score=self._min_score,
+                        description=description,
                     )
                 ):
                     best_text = new_text
@@ -485,30 +514,44 @@ class PipelinedJudgeRetry:
                     clip.captions[style] = best_score
                     self._persist_caption(result, style, best_text)
                     log_human(
-                        f"judge retry: updated {_task_id}/{style} "
+                        f"judge retry: updated {task_id}/{style} "
                         f"mean={best_score.average:.3f} "
                         f"(acc={best_score.accuracy:.2f} "
                         f"style={best_score.style_match:.2f})"
                     )
                 else:
                     log_human(
-                        f"judge retry: kept prior {_task_id}/{style} "
+                        f"judge retry: kept prior {task_id}/{style} "
                         f"(new mean={new_score.average:.3f} "
                         f"< best={best_score.average:.3f})"
                     )
-            if stopped_budget:
-                break
             if style_still_fails(
                 best_score,
                 task_id=task_id,
                 style=style,
                 caption=best_text,
                 min_score=self._min_score,
+                description=description,
             ):
                 log_human(
-                    f"judge retry: capped {_task_id}/{style} "
+                    f"judge retry: capped {task_id}/{style} "
                     f"best mean={best_score.average:.3f}"
                 )
+
+        styles = [style for _tid, style in failing]
+        workers = min(len(styles), max(get_int_env("JUDGE_RETRY_PARALLEL", 4), 1))
+        if workers <= 1 or len(styles) == 1:
+            for style in styles:
+                _retry_style(style)
+        else:
+            log_human(
+                f"judge retry: parallel re-caption {task_id} "
+                f"styles={','.join(styles)} workers={workers}"
+            )
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futs = [pool.submit(_retry_style, style) for style in styles]
+                for fut in as_completed(futs):
+                    fut.result()
 
     def _try_retry(self) -> bool:
         with self._lock:

@@ -4,11 +4,61 @@ from __future__ import annotations
 
 import json
 import re
+from functools import lru_cache
+from pathlib import Path
 from typing import Callable
 
 from openai import OpenAI
 
 from src.env import get_int_env
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_PROMPT_DIR = _REPO_ROOT / "prompts"
+_STYLE_PROMPT_NAMES = (
+    "formal",
+    "sarcastic",
+    "humorous_tech",
+    "humorous_non_tech",
+)
+_EXAMPLE_CAPTION_RE = re.compile(
+    r"(?im)^Example \(different scene.*?:\s*\n(?:Facts:.*\n)?Caption:\s*(.+)$"
+)
+_CONTENT_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "of",
+        "to",
+        "in",
+        "on",
+        "at",
+        "for",
+        "with",
+        "from",
+        "as",
+        "is",
+        "are",
+        "its",
+        "it",
+        "this",
+        "that",
+        "into",
+        "over",
+        "under",
+        "through",
+        "like",
+        "then",
+        "than",
+        "primary",
+        "subject",
+        "colors",
+        "scene",
+    }
+)
 
 _META_LEAK_PREFIXES = (
     "we need to",
@@ -38,10 +88,16 @@ _DRAFTING_PREFIXES = (
     "count words:",
     "check word count:",
     "check:",
+    "write:",
+    "example:",
+    "example: \"",
     "possible caption:",
     "possible metaphor:",
+    "possible angle:",
     "possibly:",
     "maybe:",
+    "facts say",
+    "but facts say",
     "kicker:",
     "relatable:",
     "like relatable",
@@ -120,6 +176,28 @@ _DRAFTING_PREFIXES = (
 )
 
 _DRAFTING_MARKERS = (
+    "also need",
+    "also need to",
+    "could say",
+    "could say ",
+    "maybe \"",
+    "maybe '",
+    "maybe:",
+    "possible angle",
+    "facts say",
+    "but facts say",
+    "use \"",
+    "use '",
+    "as detail",
+    "background:",
+    "notable moments:",
+    "actions (early)",
+    "actions (late)",
+    "primary subject:",
+    "caption focus:",
+    "on-screen text:",
+    "reference at least",
+    "at least one color",
     "count words:",
     "check word count:",
     "includes colors:",
@@ -237,6 +315,82 @@ _INCOMPLETE_END_RE = re.compile(
 _MARKDOWN_HEADER_RE = re.compile(r"^#{1,6}\s", re.MULTILINE)
 
 
+_DESCRIBE_FIELD_PREFIXES = (
+    "background:",
+    "notable moments:",
+    "actions (early):",
+    "actions (late):",
+    "primary subject:",
+    "subject 1:",
+    "subject 2:",
+    "setting:",
+    "camera:",
+    "caption focus:",
+    "on-screen text:",
+)
+
+# Observed mid-token cutoffs that still look like finished sentences.
+_TRUNCATED_END_STEMS = frozenset(
+    {"mult", "monito", "displa", "keybo", "contin", "throug", "witho"}
+)
+_FRAGMENT_LAST_SENTENCE = frozenset(
+    {
+        "could",
+        "maybe",
+        "also",
+        "but",
+        "and",
+        "or",
+        "so",
+        "then",
+        "well",
+        "wait",
+        "yes",
+        "no",
+        "ok",
+        "hmm",
+        "example",
+        "write",
+        "draft",
+        "note",
+    }
+)
+
+
+def is_describe_field_dump(text: str) -> bool:
+    """True when the caption is pasted describe-schema fields, not a caption."""
+    lower = text.strip().lower()
+    if not lower:
+        return False
+    if any(lower.startswith(p) for p in _DESCRIBE_FIELD_PREFIXES):
+        return True
+    # Multi-field dumps often appear mid-string after a weak opener.
+    hits = sum(1 for p in _DESCRIBE_FIELD_PREFIXES if p in lower)
+    return hits >= 2
+
+
+def is_incomplete_caption(text: str) -> bool:
+    """True for one-liners or obvious mid-word cutoffs."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    parts = _sentence_parts(stripped)
+    if len(parts) < 2:
+        return True
+    if _INCOMPLETE_END_RE.search(stripped):
+        return True
+    last = parts[-1].rstrip(".!?\"')")
+    words = last.split()
+    if not words:
+        return True
+    if len(words) == 1 and words[0].lower().strip("\"'") in _FRAGMENT_LAST_SENTENCE:
+        return True
+    end = re.sub(r"[^a-z0-9']+", "", words[-1].lower())
+    if not end:
+        return True
+    return end in _TRUNCATED_END_STEMS
+
+
 def is_drafting_junk(text: str) -> bool:
     """Reject planning notes, checklists, and fragment tails masquerading as captions."""
     stripped = text.strip()
@@ -287,6 +441,26 @@ def is_drafting_junk(text: str) -> bool:
     return False
 
 
+def caption_hard_fail_reason(
+    text: str, *, style: str = "", description: str = ""
+) -> str:
+    """Deterministic fail reason the LLM judge must not override. Empty if OK."""
+    _ = style  # reserved for style-specific hard fails
+    if not text or not text.strip():
+        return "empty"
+    if is_prompt_example_echo(text):
+        return "meta-leak"
+    if is_describe_field_dump(text):
+        return "describe-dump"
+    if is_drafting_junk(text):
+        return "meta-leak"
+    if is_incomplete_caption(text):
+        return "incomplete"
+    if description and scene_subject_mismatch(description, text):
+        return "scene-mismatch"
+    return ""
+
+
 def _sentence_parts(text: str) -> list[str]:
     parts = [p.strip() for p in _SENTENCE_SPLIT.split(text.strip()) if p.strip()]
     out: list[str] = []
@@ -295,6 +469,164 @@ def _sentence_parts(text: str) -> list[str]:
             part = part + "."
         out.append(part)
     return out
+
+
+def _normalize_caption_key(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip().lower()).strip(" \"'")
+
+
+# Historical few-shot captions (older prompt revisions) that still get echoed.
+_HARDCODED_EXAMPLE_CAPTIONS = frozenset(
+    {
+        "the orange kitten marches through the foliage like it owns the lease. tail raised, it approaches the camera as if we should be honored.",
+        "an orange kitten walks through green foliage toward the camera. its tail stays raised as it steps closer.",
+        "the orange kitten advances through green foliage like a canary deploy. tail raised, it fills the frame — production is live.",
+        "an orange kitten struts through the green foliage like a tiny vip late for brunch. tail raised, it fills the frame as if the camera owes it a close-up.",
+    }
+)
+
+
+@lru_cache(maxsize=1)
+def load_prompt_example_captions() -> frozenset[str]:
+    """Captions shown as few-shot examples in style prompts — never ship these."""
+    found: set[str] = set(_HARDCODED_EXAMPLE_CAPTIONS)
+    for name in _STYLE_PROMPT_NAMES:
+        path = _PROMPT_DIR / f"{name}.txt"
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        in_example = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.lower().startswith("example ("):
+                in_example = True
+                continue
+            if in_example and stripped.lower().startswith("caption:"):
+                key = _normalize_caption_key(stripped.split(":", 1)[1])
+                if key:
+                    found.add(key)
+                in_example = False
+    return frozenset(found)
+
+
+def is_prompt_example_echo(text: str) -> bool:
+    """True when the model pasted a style-prompt few-shot caption verbatim."""
+    key = _normalize_caption_key(text)
+    if not key:
+        return False
+    examples = load_prompt_example_captions()
+    if key in examples:
+        return True
+    # Near-exact: allow tiny punctuation drift.
+    for example in examples:
+        if abs(len(key) - len(example)) > 12:
+            continue
+        if key in example or example in key:
+            return True
+    return False
+
+
+def _content_tokens(text: str) -> set[str]:
+    return {
+        t
+        for t in _CONTENT_TOKEN_RE.findall(text.lower())
+        if len(t) > 2 and t not in _STOPWORDS
+    }
+
+
+def primary_subject_tokens(description: str) -> set[str]:
+    for line in description.splitlines():
+        stripped = line.strip()
+        lower = stripped.lower()
+        if lower.startswith("primary subject:") or lower.startswith("subject 1:"):
+            body = stripped.split(":", 1)[-1]
+            name = body.split("(", 1)[0].split("[", 1)[0]
+            return _content_tokens(name)
+    return set()
+
+
+_ANIMAL_ENTITY_TOKENS = frozenset(
+    {
+        "kitten",
+        "cat",
+        "cats",
+        "puppy",
+        "dog",
+        "dogs",
+        "rabbit",
+        "bunny",
+        "bird",
+        "birds",
+        "pigeon",
+        "dove",
+        "horse",
+        "cow",
+        "deer",
+        "fox",
+        "squirrel",
+        "fish",
+        "whale",
+        "dolphin",
+        "penguin",
+        "duck",
+        "goose",
+        "chicken",
+        "hen",
+        "parrot",
+        "owl",
+        "bear",
+        "lion",
+        "tiger",
+        "monkey",
+        "ape",
+        "goat",
+        "sheep",
+        "pig",
+        "mouse",
+        "rat",
+        "hamster",
+        "turtle",
+        "snake",
+        "lizard",
+        "frog",
+        "insect",
+        "butterfly",
+        "bee",
+        "spider",
+    }
+)
+
+
+def foreign_entity_leak(description: str, caption: str) -> bool:
+    """True when caption asserts animals not present in scene facts."""
+    desc = _content_tokens(description)
+    cap = _content_tokens(caption)
+    return bool((cap & _ANIMAL_ENTITY_TOKENS) - desc)
+
+
+def scene_subject_mismatch(description: str, caption: str) -> bool:
+    """True when the caption ignores the primary subject and barely grounds in facts.
+
+    Catches catastrophic wrong-scene outputs (e.g. prompt-example kitten on a
+    coding clip) without a vision call.
+    """
+    if not description.strip() or not caption.strip():
+        return False
+    if is_prompt_example_echo(caption):
+        return True
+    if foreign_entity_leak(description, caption):
+        return True
+    primary = primary_subject_tokens(description)
+    cap = _content_tokens(caption)
+    if not primary:
+        return False
+    if primary & cap:
+        return False
+    # No primary-subject overlap: allow only if the caption still hits several
+    # other describe anchors (color/setting/action words from the facts).
+    desc = _content_tokens(description)
+    overlap = desc & cap
+    return len(overlap) < 2
 
 
 def _strip_meta_lines(text: str) -> str | None:

@@ -266,8 +266,18 @@ def judge_caption_vision_accuracy(
         )
 
     system_prompt = load_judge_caption_accuracy_prompt()
+    frames = list(frames_jpeg)
+    max_frames = get_int_env("CAPTION_VISION_JUDGE_MAX_FRAMES", 6)
+    if max_frames > 0 and len(frames) > max_frames:
+        # Evenly subsample to keep vision latency bounded.
+        if max_frames == 1:
+            frames = [frames[len(frames) // 2]]
+        else:
+            step = (len(frames) - 1) / (max_frames - 1)
+            idxs = sorted({int(round(i * step)) for i in range(max_frames)})
+            frames = [frames[i] for i in idxs]
     content: list[dict] = [
-        {"type": "image_url", "image_url": {"url": _to_data_url(b)}} for b in frames_jpeg
+        {"type": "image_url", "image_url": {"url": _to_data_url(b)}} for b in frames
     ]
     content.append(
         {

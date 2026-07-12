@@ -6,7 +6,7 @@ import json
 import re
 from pathlib import Path
 
-from src.caption_salvage import is_drafting_junk
+from src.caption_salvage import caption_hard_fail_reason
 
 _TECH_JOKE_PATTERN = (
     r"\b(api|bugs?|deploy(?:s|ment|ing|ed)?|production|server|git|code|stack overflow|"
@@ -89,20 +89,24 @@ def is_structural_failure(text: str) -> tuple[bool, str]:
         return True, "error"
     if text.lower().startswith("video caption ("):
         return True, "placeholder"
-    if is_drafting_junk(text):
-        return True, "meta-leak"
+    hard = caption_hard_fail_reason(text)
+    if hard:
+        return True, hard
     return False, ""
 
 
-def score_caption(text: str, style: str) -> tuple[bool, str]:
+def score_caption(
+    text: str, style: str, *, description: str = ""
+) -> tuple[bool, str]:
     if not text or not text.strip():
         return False, "empty"
     if text.lower().startswith("failed to"):
         return False, "error"
     if text.lower().startswith("video caption ("):
         return False, "placeholder"
-    if is_drafting_junk(text):
-        return False, "meta-leak"
+    hard = caption_hard_fail_reason(text, style=style, description=description)
+    if hard:
+        return False, hard
     lower = text.lower()
     if any(lower.startswith(p) for p in NEUTRAL_PREFIXES):
         return False, "neutral-copy"

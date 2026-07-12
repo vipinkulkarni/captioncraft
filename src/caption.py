@@ -33,8 +33,8 @@ from src.llm_clients import (
 )
 from src.retry import RetryPolicy, call_with_retry
 from src.caption_salvage import (
+    caption_hard_fail_reason,
     compress_caption_call,
-    is_drafting_junk,
     iter_salvage_candidates,
     pick_two_sentence_fit,
     pick_valid_candidate,
@@ -339,14 +339,27 @@ def _normalize_style_output(output: str, *, style: str = "") -> str:
     return salvaged if salvaged else stripped
 
 
-def _is_bad_output(output: str, *, style: str = "") -> tuple[bool, str]:
+def _is_bad_output(
+    output: str, *, style: str = "", description: str = ""
+) -> tuple[bool, str]:
     """Basic sanity check on a generated caption. Used as a validation
     signal (for retry-once and for scoring), not as the driver of a
     cascading fallback-prompt chain."""
     if not output.strip():
         return True, "EmptyResponse"
-    if is_drafting_junk(output):
+    hard = caption_hard_fail_reason(
+        output, style=style, description=description
+    )
+    if hard == "meta-leak":
         return True, "MetaLeak"
+    if hard == "describe-dump":
+        return True, "DescribeDump"
+    if hard == "incomplete":
+        return True, "Incomplete"
+    if hard == "scene-mismatch":
+        return True, "SceneMismatch"
+    if hard:
+        return True, hard
     if _is_meta_leak(output):
         return True, "MetaLeak"
     words = output.split()
@@ -456,6 +469,9 @@ def generate_styled_caption_from_text(
     )
     last_reason = "EmptyResponse"
 
+    def _validate(text: str, *, style: str = "") -> tuple[bool, str]:
+        return _is_bad_output(text, style=style, description=description)
+
     def style_attempt(
         *,
         max_tokens: int,
@@ -491,23 +507,23 @@ def generate_styled_caption_from_text(
         out = _normalize_style_output(_strip_wrapping_quotes(raw), style=style)
         finish_reason = choice.finish_reason
         truncated = looks_truncated(out, finish_reason)
-        is_bad, reason = _is_bad_output(out, style=style)
-        if is_bad and reason in ("MetaLeak", "TooLong"):
-            salvaged, _ = pick_valid_candidate(raw, style=style, is_valid=_is_bad_output)
+        is_bad, reason = _validate(out, style=style)
+        if is_bad and reason in ("MetaLeak", "SceneMismatch", "TooLong"):
+            salvaged, _ = pick_valid_candidate(raw, style=style, is_valid=_validate)
             if salvaged:
                 out = salvaged
-                is_bad, reason = _is_bad_output(out, style=style)
+                is_bad, reason = _validate(out, style=style)
             if is_bad and reason == "TooLong":
                 hard_limit = _STYLE_WORD_HARD_LIMIT.get(style, _DEFAULT_WORD_HARD_LIMIT)
                 fit, _ = pick_two_sentence_fit(
                     raw,
                     style=style,
                     hard_limit=hard_limit,
-                    is_valid=_is_bad_output,
+                    is_valid=_validate,
                 )
                 if fit:
                     out = fit
-                    is_bad, reason = _is_bad_output(out, style=style)
+                    is_bad, reason = _validate(out, style=style)
         return _StyleAttempt(
             out=out,
             finish_reason=finish_reason,
@@ -528,7 +544,7 @@ def generate_styled_caption_from_text(
             max_tokens = base_max + 40
         else:
             max_tokens = base_max + 60
-        meta_retry = attempt > 1 and last_reason == "MetaLeak"
+        meta_retry = attempt > 1 and last_reason in ("MetaLeak", "SceneMismatch")
         too_long_retry = attempt > 1 and last_reason == "TooLong"
         if meta_retry or too_long_retry:
             temperature = min(base_temp - (attempt - 1) * 0.08, 0.25)
@@ -556,7 +572,7 @@ def generate_styled_caption_from_text(
         return "Truncated" if result.truncated else result.bad_reason or "EmptyResponse"
 
     def should_sleep(_attempt: int, reason: str) -> bool:
-        return reason in ("EmptyResponse", "MetaLeak", "TooLong")
+        return reason in ("EmptyResponse", "MetaLeak", "SceneMismatch", "TooLong")
 
     def _finalize(out: str, *, truncated: bool) -> str:
         text = out.strip()
@@ -567,13 +583,15 @@ def generate_styled_caption_from_text(
     attempts_holder: list[int] = []
 
     def _try_post_fail_salvage(reason: str, draft: str) -> str | None:
-        if reason == "MetaLeak":
-            salvaged, _ = pick_valid_candidate(draft, style=style, is_valid=_is_bad_output)
+        if reason in ("MetaLeak", "SceneMismatch"):
+            salvaged, _ = pick_valid_candidate(draft, style=style, is_valid=_validate)
             if salvaged:
-                bad, _ = _is_bad_output(salvaged, style=style)
+                bad, _ = _validate(salvaged, style=style)
                 if not bad:
                     return salvaged
-        if reason in ("MetaLeak", "TooLong") and get_int_env("STYLE_META_LEAK_SALVAGE", 1):
+        if reason in ("MetaLeak", "SceneMismatch", "TooLong") and get_int_env(
+            "STYLE_META_LEAK_SALVAGE", 1
+        ):
             salvage = style_attempt(
                 max_tokens=base_max + 60,
                 temperature=_META_LEAK_SALVAGE_TEMP,
@@ -596,13 +614,13 @@ def generate_styled_caption_from_text(
                     _strip_wrapping_quotes(compressed_raw),
                     style=style,
                 )
-                bad, _ = _is_bad_output(compressed, style=style)
+                bad, _ = _validate(compressed, style=style)
                 if not bad:
                     return _finalize(compressed, truncated=False)
                 salvaged, _ = pick_valid_candidate(
                     compressed_raw,
                     style=style,
-                    is_valid=_is_bad_output,
+                    is_valid=_validate,
                 )
                 if salvaged:
                     return _finalize(salvaged, truncated=False)
