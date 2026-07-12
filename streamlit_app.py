@@ -24,9 +24,9 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
-_DEFAULT_VISION_MODEL = "accounts/fireworks/models/minimax-m3"
+_DEFAULT_VISION_MODEL = "accounts/fireworks/models/kimi-k2p6"
 _DEFAULT_CAPTION_MODEL = "accounts/fireworks/models/deepseek-v4-flash"
-_DEFAULT_VISION_FALLBACK = "accounts/fireworks/models/qwen3p7-plus"
+_DEFAULT_VISION_FALLBACK = "accounts/fireworks/models/minimax-m3"
 
 
 def _apply_demo_env() -> None:
@@ -38,8 +38,11 @@ def _apply_demo_env() -> None:
     os.environ.setdefault("STYLE_META_LEAK_SALVAGE", "1")
     os.environ.setdefault("GOOGLE_API_TIMEOUT_S", "30")
     os.environ.setdefault("DESCRIBE_MAX_ATTEMPTS_WITH_FALLBACK", "1")
-    os.environ.setdefault("DESCRIBE_DUAL", "1")
-    os.environ.setdefault("VISION_ALT_MODEL", "accounts/fireworks/models/qwen3p7-plus")
+    os.environ.setdefault("DESCRIBE_DUAL", "0")
+    os.environ.setdefault("FRAME_MODE", "scene")
+    os.environ.setdefault("FRAME_WIDTH", "512")
+    os.environ.setdefault("API_TIMEOUT_S", "120")
+    os.environ.setdefault("VISION_FALLBACK_MODEL", _DEFAULT_VISION_FALLBACK)
 
 
 def _default_vision_model() -> str:
@@ -137,10 +140,11 @@ with st.sidebar:
     with st.expander("Pipeline (Docker batch)"):
         st.markdown(
             """
+- **Kimi K2.6** describe · scene frames @ 512px
 - Overlap describe + caption across clips
 - Prefetch next 2 downloads
 - Pipelined **gpt-oss-120b** judge + retry
-- 540s budget · deadline guard → M3
+- 540s budget · deadline guard → MiniMax fallback
 """
         )
     st.caption("Demo disables judge+retry for speed (~30–90s per clip).")
