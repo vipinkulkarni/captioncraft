@@ -34,7 +34,8 @@ class TestErrorMapping:
 
 class TestTypedPublicCaptions:
     @pytest.mark.parametrize("style", STYLES)
-    def test_describe_result_failure_string(self, style):
+    def test_describe_result_failure_string(self, monkeypatch, style):
+        monkeypatch.setenv("FRIENDLY_FAILURES", "0")
         result = DescribeResult(
             text=None,
             error=DescribeError.EMPTY,
@@ -45,7 +46,8 @@ class TestTypedPublicCaptions:
         assert public_describe_result(result, style=style) == result.to_failure_string()
 
     @pytest.mark.parametrize("style", STYLES)
-    def test_caption_result_failure_string(self, style):
+    def test_caption_result_failure_string(self, monkeypatch, style):
+        monkeypatch.setenv("FRIENDLY_FAILURES", "0")
         result = CaptionResult(
             text=None,
             error=CaptionError.META_LEAK,
@@ -55,7 +57,8 @@ class TestTypedPublicCaptions:
         assert public_caption_result(result, style=style) == result.to_failure_string()
 
     @pytest.mark.parametrize("style", STYLES)
-    def test_process_failure_string(self, style):
+    def test_process_failure_string(self, monkeypatch, style):
+        monkeypatch.setenv("FRIENDLY_FAILURES", "0")
         text = public_process_failure(
             ProcessError.PROCESSING,
             style=style,
