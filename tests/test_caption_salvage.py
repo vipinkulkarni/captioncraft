@@ -153,6 +153,22 @@ class TestHardFailGates:
         assert not is_describe_field_dump(text)
         assert caption_hard_fail_reason(text) == ""
 
+    def test_finished_punchy_one_liner_ok(self):
+        text = (
+            "Nature's annual deployment: all leaf nodes updated to yellow "
+            "simultaneously, no breaking changes reported."
+        )
+        assert not is_incomplete_caption(text)
+        assert caption_hard_fail_reason(text) == ""
+
+    def test_dangling_like_theyre_incomplete(self):
+        text = (
+            "The person in the light pink sleeve and striped apron chops "
+            "cucumber like they're."
+        )
+        assert is_incomplete_caption(text) or is_drafting_junk(text)
+        assert caption_hard_fail_reason(text) in ("incomplete", "meta-leak")
+
 
 class TestSalvageCandidates:
     def test_meta_preamble_then_caption(self):

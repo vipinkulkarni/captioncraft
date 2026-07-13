@@ -308,7 +308,10 @@ _INCOMPLETE_END_RE = re.compile(
     r",\s*but\s*\.|"
     r"\(\s*\.|"
     r"\(\d+\s*\.|"
-    r"\b(?:like a|lands on|the incoming|awaiting merge|are the|and late)\s*\.?"
+    r"\b(?:like a|lands on|the incoming|awaiting merge|are the|and late)\s*\.|"
+    # Dangling simile / contraction cutoffs: "chops cucumber like they're."
+    r"\blike\s+(?:they(?:'re| are)|it(?:'s| is)|he(?:'s| is)|she(?:'s| is)|we(?:'re| are))\s*\.|"
+    r"\b(?:they(?:'re)|it(?:'s)|he(?:'s)|she(?:'s)|we(?:'re))\s*\."
     r")$",
     re.IGNORECASE,
 )
@@ -370,12 +373,17 @@ def is_describe_field_dump(text: str) -> bool:
 
 
 def is_incomplete_caption(text: str) -> bool:
-    """True for one-liners or obvious mid-word cutoffs."""
+    """True for truncated / fragment captions. Finished 1–2 sentence lines are OK."""
     stripped = text.strip()
     if not stripped:
         return False
+    if stripped[-1] not in ".!?\"')":
+        return True
     parts = _sentence_parts(stripped)
-    if len(parts) < 2:
+    if not parts:
+        return True
+    # Official Track 2 refs are often one punchy sentence; allow that when complete.
+    if len(parts) == 1 and len(parts[0].split()) < 8:
         return True
     if _INCOMPLETE_END_RE.search(stripped):
         return True
@@ -550,6 +558,7 @@ _ANIMAL_ENTITY_TOKENS = frozenset(
         "kitten",
         "cat",
         "cats",
+        "kitty",
         "puppy",
         "dog",
         "dogs",
@@ -596,10 +605,30 @@ _ANIMAL_ENTITY_TOKENS = frozenset(
     }
 )
 
+# Treat close animal terms as the same entity for mismatch checks.
+_ANIMAL_SYNONYMS: dict[str, frozenset[str]] = {
+    "kitten": frozenset({"cat", "cats", "kitty"}),
+    "kitty": frozenset({"cat", "cats", "kitten"}),
+    "cat": frozenset({"kitten", "cats", "kitty"}),
+    "cats": frozenset({"cat", "kitten", "kitty"}),
+    "puppy": frozenset({"dog", "dogs"}),
+    "dog": frozenset({"puppy", "dogs"}),
+    "dogs": frozenset({"dog", "puppy"}),
+    "bunny": frozenset({"rabbit"}),
+    "rabbit": frozenset({"bunny"}),
+}
+
+
+def _expand_animal_synonyms(tokens: set[str]) -> set[str]:
+    out = set(tokens)
+    for token in list(tokens):
+        out |= _ANIMAL_SYNONYMS.get(token, frozenset())
+    return out
+
 
 def foreign_entity_leak(description: str, caption: str) -> bool:
     """True when caption asserts animals not present in scene facts."""
-    desc = _content_tokens(description)
+    desc = _expand_animal_synonyms(_content_tokens(description))
     cap = _content_tokens(caption)
     return bool((cap & _ANIMAL_ENTITY_TOKENS) - desc)
 
@@ -616,15 +645,15 @@ def scene_subject_mismatch(description: str, caption: str) -> bool:
         return True
     if foreign_entity_leak(description, caption):
         return True
-    primary = primary_subject_tokens(description)
-    cap = _content_tokens(caption)
+    primary = _expand_animal_synonyms(primary_subject_tokens(description))
+    cap = _expand_animal_synonyms(_content_tokens(caption))
     if not primary:
         return False
     if primary & cap:
         return False
     # No primary-subject overlap: allow only if the caption still hits several
     # other describe anchors (color/setting/action words from the facts).
-    desc = _content_tokens(description)
+    desc = _expand_animal_synonyms(_content_tokens(description))
     overlap = desc & cap
     return len(overlap) < 2
 
@@ -799,7 +828,7 @@ def pick_two_sentence_fit(
 
 
 _COMPRESS_USER = (
-    "Rewrite the draft below as exactly 2 short sentences, under {target} words total. "
+    "Rewrite the draft below as 1 punchy sentence or 2 short ones, under {target} words total. "
     "Keep the same tone, humor, and scene facts. Output ONLY the rewritten caption.\n\n"
     "Draft:\n{draft}"
 )

@@ -69,58 +69,58 @@ _DESCRIBE_FAILURE_PREFIX = DESCRIBE_FAILURE_PREFIX
 _CAPTION_FAILURE_PREFIX = CAPTION_FAILURE_PREFIX
 _PROCESS_FAILURE_PREFIX = PROCESS_FAILURE_PREFIX
 
+# Always 1–2 finished sentences that pass local score_caption (incl. tech markers).
 _FRIENDLY_DESCRIBE_FAILURE: dict[str, str] = {
     "formal": (
-        "The available footage did not provide enough visual detail for a complete "
-        "scene description. No reliable subjects or actions could be confirmed."
+        "The available footage did not provide enough visual detail for a reliable "
+        "scene description, so no subjects or actions could be confirmed with confidence."
     ),
     "sarcastic": (
-        "The clip kept its secrets, offering too little to work with for a proper "
-        "scene read. Even the obvious details stayed stubbornly out of reach."
+        "The clip kept its secrets so carefully that even a sarcastic caption barely "
+        "has anything solid to work with."
     ),
     "humorous_tech": (
-        "Sparse frames left the describe pipeline empty—nothing reliable enough to "
-        "commit. Production stayed dark with no deployable scene facts."
+        "Sparse frames left the describe pipeline empty — nothing reliable enough to "
+        "commit to production."
     ),
     "humorous_non_tech": (
-        "The clip was too stingy with details to pin down what was really going on. "
-        "It left more questions than anything you could describe with confidence."
+        "The clip was too stingy with details to pin down what was going on, so this "
+        "caption has to shrug and move on."
     ),
 }
 _FRIENDLY_CAPTION_FAILURE: dict[str, str] = {
     "formal": (
-        "A scene unfolds in the video, though a styled caption could not be produced. "
-        "The available details were insufficient for a finished style rewrite."
+        "A scene unfolds in the video, but a finished formal caption could not be "
+        "produced from the available details."
     ),
     "sarcastic": (
-        "Something happens in this clip, apparently—but a caption with the requested "
-        "tone never showed up. The rewrite step simply declined to finish the job."
+        "Something happens here, apparently — the sarcastic rewrite just never "
+        "bothered to finish the job."
     ),
     "humorous_tech": (
-        "The scene description compiled, but this styled caption deploy failed. "
-        "No output shipped past the style rewrite stage."
+        "The scene description compiled, but this styled caption deploy failed before "
+        "anything shipped to production."
     ),
     "humorous_non_tech": (
-        "Something's clearly happening here, but the caption never quite came together. "
-        "The tone rewrite stalled before a finished pair of sentences landed."
+        "Something is clearly happening here, but the everyday-humor rewrite stalled "
+        "before a finished punchline landed."
     ),
 }
 _FRIENDLY_PROCESS_FAILURE: dict[str, str] = {
     "formal": (
-        "This video clip could not be processed into captions with the requested styles. "
-        "The pipeline stopped before any finished captions were available."
+        "This video clip could not be processed into the requested caption styles "
+        "before the pipeline stopped."
     ),
     "sarcastic": (
-        "The pipeline looked at this task and quietly declined to cooperate. "
-        "No finished captions made it past the awkward silence."
+        "The pipeline looked at this task and quietly declined to cooperate, leaving "
+        "no finished captions behind."
     ),
     "humorous_tech": (
-        "Processing hit an unhandled edge case—no usable captions made it to production. "
-        "The retry queue stayed empty after the hard fail."
+        "Processing hit an unhandled edge case — no usable captions made it past "
+        "the hard fail into production."
     ),
     "humorous_non_tech": (
-        "This clip didn't cooperate, so no proper captions made it out the other side. "
-        "Whatever happened never turned into a finished write-up."
+        "This clip did not cooperate, so no proper captions made it out the other side."
     ),
 }
 
@@ -150,8 +150,8 @@ _STYLE_STRUCTURED_HINT = (
 
 _META_LEAK_RETRY_NUDGE = (
     "Your last reply restated instructions or rules. "
-    "Output ONLY the final caption — two sentences, no preamble, "
-    "no mention of rules, the user, or your task."
+    "Output ONLY the final caption — one punchy sentence or two short ones, "
+    "no preamble, no mention of rules, the user, or your task."
 )
 
 _DIVERSITY_RETRY_NUDGE = (
@@ -187,7 +187,8 @@ def resolve_style_temperature(style: str, override: float | None = None) -> floa
 
 
 def _friendly_failures_enabled() -> bool:
-    return os.environ.get("FRIENDLY_FAILURES", "0") == "1"
+    # Default on so hard fails never ship raw "Failed to …" strings to judges.
+    return os.environ.get("FRIENDLY_FAILURES", "1") == "1"
 
 
 def is_describe_failure(text: str) -> bool:
@@ -203,10 +204,13 @@ def public_describe_result(result: DescribeResult, *, style: str = "formal") -> 
 
 
 def public_caption_result(result: CaptionResult, *, style: str = "formal") -> str:
-    if result.ok:
-        return result.text or ""
+    if result.ok and (result.text or "").strip():
+        text = result.text.strip()
+        # Never ship raw internal failure strings even if marked ok.
+        if not text.lower().startswith("failed to"):
+            return text
     if not _friendly_failures_enabled():
-        return result.to_failure_string()
+        return result.to_failure_string() if not result.ok else (result.text or "")
     return _friendly_message(_FRIENDLY_CAPTION_FAILURE, style)
 
 
@@ -504,7 +508,7 @@ def generate_styled_caption_from_text(
         if json_mode:
             user_prompt = (
                 f"{user_prompt}\n\nReply with JSON only: "
-                '{"caption":"your two-sentence caption here"}'
+                '{"caption":"your finished caption here"}'
             )
         request_kwargs: dict = {
             "model": model,

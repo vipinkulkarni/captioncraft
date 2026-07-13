@@ -84,12 +84,13 @@ class CaptionJudgeScore:
         return (self.accuracy + self.style_match) / 2.0
 
     def passes(self, *, min_score: float) -> bool:
+        """Pass when the leaderboard-shaped mean clears the bar (not min of both axes)."""
         if self.skipped:
             return False
         if self.meta_leak:
             return False
         threshold = resolve_judge_min_score(min_score)
-        return self.accuracy >= threshold and self.style_match >= threshold
+        return self.average >= threshold
 
 
 @dataclass

@@ -32,9 +32,18 @@ class TestStructuralFailure:
         )
         assert is_structural_failure(text) == (False, "")
 
-    def test_one_liner_is_incomplete(self):
+    def test_truncated_one_liner_is_incomplete(self):
         text = "The black editor screen watches its mult."
         assert is_structural_failure(text) == (True, "incomplete")
+
+    def test_finished_punchy_one_liner_ok(self):
+        text = (
+            "A kitten outdoors, clearly plotting something elaborate and fully "
+            "confident it will succeed."
+        )
+        assert is_structural_failure(text) == (False, "")
+        ok, reason = score_caption(text, "sarcastic")
+        assert ok, reason
 
     def test_describe_dump_is_structural(self):
         text = (

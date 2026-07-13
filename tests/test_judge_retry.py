@@ -64,6 +64,7 @@ def test_list_judge_failures_regex(monkeypatch):
 
 def test_list_judge_failures_quality_floor(monkeypatch):
     monkeypatch.setenv("JUDGE_RETRY_QUALITY_MIN", "0.8")
+    monkeypatch.setenv("JUDGE_ACC_RETRY_FLOOR", "0.75")
     clip = ClipJudgeResult(
         task_id="e01",
         captions={
@@ -73,6 +74,23 @@ def test_list_judge_failures_quality_floor(monkeypatch):
         },
     )
     assert list_judge_failures(clip, min_score=0.8) == [("e01", "formal")]
+
+
+def test_list_judge_failures_keeps_punchy_pass(monkeypatch):
+    """Uneven but strong mean should not be rewritten by retry."""
+    monkeypatch.setenv("JUDGE_RETRY_QUALITY_MIN", "0.9")
+    monkeypatch.setenv("JUDGE_ACC_RETRY_FLOOR", "0.75")
+    monkeypatch.setenv("JUDGE_STYLE_RETRY_FLOOR", "0.70")
+    monkeypatch.setenv("JUDGE_RETRY_REGEX", "0")
+    clip = ClipJudgeResult(
+        task_id="v1",
+        captions={
+            "sarcastic": CaptionJudgeScore(
+                style="sarcastic", accuracy=0.86, style_match=0.96
+            ),
+        },
+    )
+    assert list_judge_failures(clip, min_score=0.9) == []
 
 
 def test_judge_feedback_nudge_includes_issue():
@@ -86,7 +104,7 @@ def test_judge_feedback_nudge_includes_issue():
     assert "accuracy=0.50" in nudge
     assert "style_match=0.60" in nudge
     assert "invented birds" in nudge
-    assert "do not invent" in nudge
+    assert "not invent" in nudge.lower()
 
 
 def test_judge_feedback_nudge_meta_leak():

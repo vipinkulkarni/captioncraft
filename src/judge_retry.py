@@ -63,6 +63,10 @@ def list_judge_failures(
     failures: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     quality_floor = resolve_judge_quality_floor()
+    # Hard floors catch disasters without rewriting good punchy captions
+    # that sit slightly uneven across axes (e.g. acc 0.86 / style 0.96).
+    acc_floor = get_float_env("JUDGE_ACC_RETRY_FLOOR", 0.75)
+    style_floor = get_float_env("JUDGE_STYLE_RETRY_FLOOR", 0.70)
     check_regex = get_int_env("JUDGE_RETRY_REGEX", 1) == 1
 
     for style, score in clip.captions.items():
@@ -77,7 +81,12 @@ def list_judge_failures(
                 failures.append(key)
                 seen.add(key)
             continue
-        if score.accuracy < quality_floor or score.style_match < quality_floor:
+        if score.average < quality_floor:
+            if key not in seen:
+                failures.append(key)
+                seen.add(key)
+            continue
+        if score.accuracy < acc_floor or score.style_match < style_floor:
             if key not in seen:
                 failures.append(key)
                 seen.add(key)
@@ -131,15 +140,17 @@ def judge_feedback_nudge(score: CaptionJudgeScore) -> str:
         return (
             f"Previous output was unfinished, wrong-scene, meta-leak, or drafting "
             f"(Issue: {issue}). "
-            "Output ONLY a finished TWO-sentence caption about the Primary subject "
-            "in the scene facts. No describe-field labels, no planning notes, "
-            "no mid-word cutoffs. Do not reuse example captions."
+            "Output ONLY a finished caption (1 punchy sentence or 2 short ones) about "
+            "the Primary subject in the scene facts. No describe-field labels, no "
+            "planning notes, no mid-word cutoffs. Do not reuse example captions."
         )
     return (
         f"Previous caption scored accuracy={score.accuracy:.2f} "
-        f"style_match={score.style_match:.2f}. Issue: {issue}. "
-        "Rewrite using only scene facts; do not invent or rename objects, species, "
-        "UI, code, or emotions not listed. Metaphors must not add new scene objects."
+        f"style_match={score.style_match:.2f} (mean={score.average:.2f}). "
+        f"Issue: {issue}. "
+        "Rewrite using only scene facts; keep it punchy and on-style. "
+        "Do not invent or rename objects, species, UI, code, or emotions not listed. "
+        "Metaphors must not add new scene objects."
     )
 
 

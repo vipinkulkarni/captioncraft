@@ -200,6 +200,12 @@ class TestJudgePassLogic:
             style="formal", style_match=0.8, accuracy=0.7
         ).passes(min_score=0.8)
 
+    def test_passes_on_mean_not_min_axis(self):
+        # Punchy official-style: slightly lower accuracy, strong style → mean ≥ 0.9
+        score = CaptionJudgeScore(style="sarcastic", accuracy=0.86, style_match=0.96)
+        assert abs(score.average - 0.91) < 1e-9
+        assert score.passes(min_score=0.9)
+
     def test_min_score_clamps_without_legacy_remap(self):
         # Values >1 are clamped to 1.0, not divided by 5.
         assert resolve_judge_min_score(4) == 1.0

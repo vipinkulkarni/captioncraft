@@ -1351,6 +1351,7 @@ def _process_task(
     describe_s = 0.0
     caption_s = 0.0
     frames_count = 0
+    frames: list[bytes] = []
     video_duration_s: float | None = None
     describe = DescribeResult(text=None, error=None)
     style_attempts: dict[str, int] = {}

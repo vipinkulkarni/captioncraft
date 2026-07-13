@@ -26,7 +26,7 @@ TECH_JARGON_MARKERS = re.compile(
     _TECH_JOKE_PATTERN.replace("|staging|", "|").replace("|code|", "|"),
     re.I,
 )
-VALID_END_CHARS = ".!?)\""
+VALID_END_CHARS = ".!?)\"" + "'"
 
 STYLE_WORD_HARD_LIMIT: dict[str, int] = {
     "formal": 58,
